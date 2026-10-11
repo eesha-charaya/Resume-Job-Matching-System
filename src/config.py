@@ -1,19 +1,17 @@
 """
 Project-wide configuration constants.
 
-Environment variables (VOYAGE_API_KEY, DB_PATH, GREENHOUSE_BOARD_TOKENS)
-are NOT read here — scripts load them via load_dotenv() and pass values as
-explicit arguments to src/ functions.
+Environment variables (DB_PATH, GREENHOUSE_BOARD_TOKENS, etc.) are NOT read here;
+scripts load them via load_dotenv() and pass values as explicit arguments to src/
+functions where needed.
 """
 
 import os
 
-# Voyage AI / Embedding
-VOYAGE_MODEL: str = "voyage-3.5-lite"
-EMBEDDING_DIM: int = 1024           # Output dimension for voyage-3.5-lite
-VOYAGE_BATCH_SIZE: int = 128        # Hard API limit per embed() call
-EMBED_MAX_RETRIES: int = 3
-EMBED_RETRY_BASE_DELAY: float = 2.0 # Base seconds for exponential back-off
+# Embeddings
+EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-0.6B"
+EMBEDDING_DIM: int = 1024
+EMBEDDING_BATCH_SIZE: int = 128
 
 # Database
 DB_DEFAULT_PATH: str = "data/jobs.db"
@@ -58,15 +56,15 @@ GENERATION_TOP_P: float = 0.9
 GENERATION_MAX_TOKENS: int = 150
 SKELETON_MAX_TOKENS: int = 200
 VALIDATION_MAX_TOKENS: int = 50
-REPAIR_MAX_TOKENS: int = 200  # Same output format as SKELETON_MAX_TOKENS
+REPAIR_MAX_TOKENS: int = 200
 MAX_BATCH_SIZE: int = 2
-PROMPT_MAX_CHARS: int = 8000  # Max char length for LLM prompts (safety guard)
+PROMPT_MAX_CHARS: int = 8000
 
 # Synthetic positives generation (per-field strategy)
-TARGET_RESPONSIBILITY_COUNT: int = 4  # Target within valid 3–5 range
-SKILLS_MAX_TOKENS: int = 80           # Shorter response for skills-only call
-RESPONSIBILITY_MAX_TOKENS: int = 60   # Single responsibility is 1 sentence
-RESUME_EXTRACT_MAX_TOKENS: int = 10   # Years extraction (single integer line)
+TARGET_RESPONSIBILITY_COUNT: int = 4
+SKILLS_MAX_TOKENS: int = 80
+RESPONSIBILITY_MAX_TOKENS: int = 60
+RESUME_EXTRACT_MAX_TOKENS: int = 10
 
 CORPUS_LIMITATION_MESSAGE: str = (
     "No strongly matching jobs found in current corpus. "
