@@ -4,7 +4,7 @@ urllib3==2.2.2
 python-dotenv>=1.0.0
 
 # Embeddings
-voyageai>=0.3.0
+sentence-transformers>=3.0.0
 numpy>=1.26.0
 google-genai>=1.0.0
 
@@ -33,7 +33,6 @@ pytest-asyncio==0.24.0
 mlflow>=2.14.0
 
 # NOTE: SwigPyPacked DeprecationWarning Suppression
-# Some transitive dependencies (via voyageai, chromadb, etc.) use SWIG-wrapped C extensions
-# that lack proper __module__ attributes, triggering a harmless deprecation warning in Python 3.11+.
-# This is suppressed globally in src/__init__.py. See: https://github.com/pytorch/ao/issues/2752
-python-dotenv>=1.0.0
+# Some transitive dependencies may use SWIG-wrapped C extensions that lack proper
+# __module__ attributes, triggering a harmless deprecation warning in Python 3.11+.
+# This is suppressed globally in src/__init__.py.
