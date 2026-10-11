@@ -1,4 +1,4 @@
-"""Orchestration script: embed all preprocessed job descriptions using Voyage AI."""
+"""Orchestration script: embed preprocessed job descriptions with Qwen3-Embedding-0.6B."""
 
 import argparse
 import logging
@@ -12,25 +12,16 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from src.config import DB_DEFAULT_PATH, VOYAGE_BATCH_SIZE, DB_CHUNK_SIZE
+from src.config import DB_CHUNK_SIZE, DB_DEFAULT_PATH, EMBEDDING_BATCH_SIZE
 from src.db_utils import add_column_if_missing
 from src.embedding import create_client, embed_batch, serialize_embedding
 
 logger = logging.getLogger(__name__)
 
 
-def run_embedding(db_path: str, voyage_api_key: str) -> None:
-    """
-    Embed all unembedded, preprocessed job descriptions in the database.
-
-    Adds embedding and embedded columns if missing, then processes all jobs
-    where embedded=0 and cleaned_description is non-empty, in batches.
-
-    Args:
-        db_path: Path to the SQLite database.
-        voyage_api_key: Voyage AI API key.
-    """
-    client = create_client(voyage_api_key)
+def run_embedding(db_path: str) -> None:
+    """Embed all unembedded, preprocessed job descriptions in the database."""
+    client = create_client()
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -66,21 +57,21 @@ def run_embedding(db_path: str, voyage_api_key: str) -> None:
                 break
             last_id = chunk[-1]["id"]
 
-            # Split into Voyage AI sub-batches
-            for batch_start in range(0, len(chunk), VOYAGE_BATCH_SIZE):
-                sub_batch = chunk[batch_start : batch_start + VOYAGE_BATCH_SIZE]
+            for batch_start in range(0, len(chunk), EMBEDDING_BATCH_SIZE):
+                sub_batch = chunk[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
                 ids = [row["id"] for row in sub_batch]
                 texts = [row["cleaned_description"] for row in sub_batch]
                 min_id = min(ids)
                 max_id = max(ids)
 
-                # Time sub-batch embedding
                 sub_batch_start = time.monotonic()
                 try:
                     embeddings = embed_batch(client, texts)
                 except Exception as exc:
                     logger.error(
-                        "embed_batch raised after exhausting retries — %s: %s",
+                        "embed_batch failed for ids %d-%d — %s: %s",
+                        min_id,
+                        max_id,
                         type(exc).__name__,
                         exc,
                     )
@@ -88,7 +79,6 @@ def run_embedding(db_path: str, voyage_api_key: str) -> None:
                     continue
 
                 sub_batch_elapsed = time.monotonic() - sub_batch_start
-                # Log at DEBUG level with per-sub-batch timing
                 logger.debug(
                     "Embedded sub-batch of %d jobs (id range %d-%d) in %.2fs",
                     len(sub_batch),
@@ -97,7 +87,6 @@ def run_embedding(db_path: str, voyage_api_key: str) -> None:
                     sub_batch_elapsed,
                 )
 
-                # Serialize and write back
                 updates = [
                     (serialize_embedding(emb), row_id)
                     for emb, row_id in zip(embeddings, ids)
@@ -132,9 +121,8 @@ def run_embedding(db_path: str, voyage_api_key: str) -> None:
 
 def main() -> None:
     """Main entry point."""
-    # Parse arguments
     parser = argparse.ArgumentParser(
-        description="Embed all preprocessed job descriptions using Voyage AI."
+        description="Embed all preprocessed job descriptions using Qwen3-Embedding-0.6B."
     )
     parser.add_argument(
         "--db-path",
@@ -149,24 +137,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Configure logging (after argparse)
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
 
-    # Load environment variables (after argparse, after logging)
     load_dotenv()
 
-    # Resolve database path: arg → env var → default
-    db_path = args.db_path or os.getenv("DB_PATH", DB_DEFAULT_PATH)
-    voyage_api_key = os.getenv("VOYAGE_API_KEY", "")
-
-    if not voyage_api_key:
-        logger.error("VOYAGE_API_KEY is not set in .env")
-        sys.exit(1)
-
-    run_embedding(db_path, voyage_api_key)
+    db_path = args.db_path or os.getenv("DB_PATH") or DB_DEFAULT_PATH
+    run_embedding(db_path)
 
 
 if __name__ == "__main__":
