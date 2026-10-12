@@ -1,549 +1,253 @@
 # Resume-Job Matching System
 
-A RAG pipeline that matches resumes to job postings. Given a resume, the system retrieves the most semantically relevant jobs from a corpus, reranks them with cross-encoders, and generates grounded explanations for why each match works.
+An end-to-end resume-to-job matching pipeline that retrieves relevant job postings with dense embeddings, reranks them with a cross-encoder, and generates grounded fit explanations with a local LLM.
 
-> **Scale note:** The data collection pipeline and FastAPI app are at minimum viable scale—enough to operationally test and validate the RAG system end-to-end. The corpus may not cover every role or industry, but the RAG pipeline itself will reliably surface the best matches within whatever jobs have been collected. Poor results are a corpus coverage problem, not a pipeline problem.
+The current implementation uses **Qwen3-Embedding-0.6B locally** for embeddings, **ChromaDB HNSW** for approximate nearest-neighbor retrieval, **Cohere Rerank** for second-stage ranking, and **Ollama + Llama 3.2 3B** for grounded explanation generation.
 
-## The Problem
+## Pipeline
 
-Job searching is a time sink. A typical job seeker spends hours every day manually scanning job boards, reading descriptions, and evaluating whether a role is actually a good fit—only to find out it isn't after writing a cover letter. This is a fundamentally inefficient process: the bottleneck isn't the jobs available, it's the matching.
+### Offline job pipeline
 
-This system automates that matching. Upload your resume once, and instead of you searching through hundreds of postings, the pipeline searches for you—surfacing only the roles where your skills and experience are a genuine fit, with an explanation of why. What used to take hours of manual filtering takes seconds.
-
-The key insight is that job matching is a retrieval problem, not a search problem. You're not looking for jobs that contain certain keywords—you're looking for jobs where your *entire profile* aligns with the role's requirements. That's a much harder problem, and it's exactly what this system is built to solve.
-
-## Why This Approach?
-
-Matching resumes to jobs is a retrieval problem: you need to find relevant jobs in a large corpus quickly. But raw semantic similarity alone isn't enough—a "Senior" job and a "Junior" resume might score high together despite the mismatch. This system uses a three-stage refinement:
-
-1. **Dense retrieval** (VoyageAI embeddings + ChromaDB HNSW) finds top 100 semantically similar jobs
-2. **Cross-encoder reranking** (Cohere) re-scores those 100 using a trained model optimized for ranking
-3. **Local LLM generation** (Ollama) produces human-readable explanations grounded in the actual job description and resume
-
-The result is fast, scalable, and interpretable. Benchmarks on held-out test data show **90% precision@5** and **88% recall@10**—meaning 90% of top-5 matches are valid, and we catch 88% of true positives in top-10.
-
-## System Architecture
-
-The system is split into two pipelines: one that builds the job corpus offline (cron-based), and one that handles live resume matching.
-
+```text
+Job APIs / Greenhouse boards
+        ↓
+SQLite jobs database
+        ↓
+HTML/text preprocessing
+        ↓
+Qwen3-Embedding-0.6B (local)
+        ↓
+1024-d float32 embeddings
+        ↓
+ChromaDB HNSW index
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│ DATA PIPELINE (Offline, runs on cron)                               │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  [8 Job APIs] ──→ collect_jobs.py ──→ jobs.db                      │
-│  • Greenhouse         (company-specific boards)                      │
-│  • JSearch            (RapidAPI, search-based)                      │
-│  • JobSearch          (RapidAPI, search-based)                      │
-│  • JobsAPI            (RapidAPI, Bing aggregator)                   │
-│  • SerpAPI            (Google Jobs)                                  │
-│  • Arbeitnow          (free, no auth)                               │
-│  • Jobicy             (free remote focus)                            │
-│  • Jooble             (direct API, 500/month cap)                   │
-│                                                                       │
-│           ↓ preprocess_jobs.py                                       │
-│       (HTML clean + metadata extract)                                │
-│           ↓ embed_jobs.py                                            │
-│  (VoyageAI embeddings → SQLite BLOB)                                │
-│           ↓ ChromaDB                                                 │
-│      (HNSW index, persistent)                                        │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ INFERENCE PIPELINE (FastAPI, runs online)                           │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  [Resume text]                                                       │
-│       ↓ embed (VoyageAI)                                            │
-│       ↓ retrieve (ChromaDB, top-100)                                │
-│       ↓ rerank (Cohere, top-10)                                     │
-│       ↓ generate (Ollama LLaMA, grounded explanation)               │
-│       ↓ /match endpoint                                              │
-│   [Matched jobs + explanations]                                      │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+
+### Online matching pipeline
+
+```text
+Resume
+  ↓
+Qwen3 embedding
+  ↓
+metadata filters
+  ↓
+HNSW dense retrieval (top 100)
+  ↓
+Cohere cross-encoder reranking (top 10)
+  ↓
+local Llama requirement/evidence generation
+  ↓
+grounded fit explanations
 ```
 
 ## Tech Stack
 
-| Component               | Technology                                   | Role                            |
-| ----------------------- | -------------------------------------------- | ------------------------------- |
-| **Job Collection**      | 8 APIs (Greenhouse, SerpAPI, RapidAPI, etc.) | Aggregate postings              |
-| **Database**            | SQLite                                       | Raw jobs + embeddings storage   |
-| **Text Cleaning**       | Custom regex + HTML parsing                  | HTML → plain text               |
-| **Metadata Extraction** | Regex + Ollama LLM fallback                  | Degree, seniority, years        |
-| **Embeddings**          | VoyageAI `voyage-3.5-lite`                   | Dense 1024-dim vectors          |
-| **Vector Store**        | ChromaDB (HNSW)                              | Fast semantic search            |
-| **Reranking**           | Cohere `rerank-english-v3.0`                 | Cross-encoder scoring           |
-| **Local LLM**           | Ollama + LLaMA 3.2 3B                        | Grounded explanation generation |
-| **Web Framework**       | FastAPI                                      | REST API & health checks        |
-| **Reverse Proxy**       | Nginx (Alpine)                               | HTTP gateway                    |
-| **Containerization**    | Docker + Docker Compose                      | Production deployment           |
+| Component | Technology | Purpose |
+| --- | --- | --- |
+| Job collection | Greenhouse + multiple job APIs | Build the job corpus |
+| Storage | SQLite | Raw jobs, cleaned jobs, serialized embeddings |
+| Embeddings | `Qwen/Qwen3-Embedding-0.6B` | 1024-dimensional dense vectors |
+| Vector retrieval | ChromaDB + HNSW | Approximate nearest-neighbor semantic search |
+| Reranking | Cohere `rerank-english-v3.0` | Cross-encoder relevance scoring |
+| Local LLM | Ollama + `llama3.2:3b-instruct-q4_K_M` | Requirement extraction and fit explanations |
+| API | FastAPI | Matching and health endpoints |
+| Evaluation | Precision@5 / Recall@10 scripts + MLflow | Held-out retrieval evaluation |
 
-## How It Works: The Pipeline
+## Retrieval Configuration
 
-### Stage 1: Collecting Jobs
+Current defaults from `src/config.py`:
 
-The system aggregates jobs from 8 different sources via `data_pipeline/collect_jobs.py`. The `JobCollectionOrchestrator` class coordinates between them, handling the complexity of different rate limits and API patterns.
+```text
+Embedding model: Qwen/Qwen3-Embedding-0.6B
+Embedding dimension: 1024
+Retrieve top K: 100
+HNSW ef_construction: 400
+HNSW ef: 400
+Rerank top N: 10
+```
 
-Each collector extends a shared `BaseCollector` base class, which provides exponential backoff retry logic (max 3 attempts), budget pooling (e.g., JSearch gets 38 requests per run, Jooble gets 38 due to its 500/month cap), and automatic 429 (rate-limit) detection with adaptive pagination.
+The system intentionally retrieves a broad candidate set first and then applies a more expensive reranker to the top candidates.
 
-Jobs are deduplicated by checking the `(external_id, source_system, source_board)` tuple—if a job was already seen, it gets marked as `active` and its timestamp updates; otherwise it's inserted fresh. Every 3 days, the system marks jobs it hasn't re-seen as `removed`.
+## Evaluation
 
-The whole collection process runs on a schedule via GitHub Actions 3 times a week (Mon/Wed/Fri at 6AM UTC). A `collection_log` table in SQLite tracks requests, errors, and jobs found per source for debugging.
+The repository contains tune/test evaluation scripts that measure:
 
-### Stage 2: Cleaning & Extracting Metadata
+- **Precision@5** — how many of the top five returned jobs are known relevant positives.
+- **Recall@10** — how many known relevant positives appear in the top ten.
 
-Raw job descriptions come in as messy HTML with embedded scripts, iframes, and encoded entities. The preprocessing step in `scripts/pipeline/preprocess_jobs.py` cleans them up:
+The evaluation uses held-out resume/job examples with synthetic positive jobs inserted into a corpus of sampled real jobs. Metrics should be reported only after running the current Qwen-based evaluation; historical values from the previous embedding backend are not treated as current results.
 
-1. Unescape HTML entities (`&#39;` becomes `'`)
-2. Strip out iframes, images, and scripts
-3. Extract plain text from the remaining HTML
-4. Collapse excess whitespace and normalize newlines
-5. Standardize unicode punctuation (smart quotes become straight quotes)
-
-Once cleaned, `src/regex_extraction.py` pulls out key metadata using simple pattern matching:
-
-- **Degree requirement:** Searches for "BS", "Master's", "PhD" and normalizes to 0–3
-- **Seniority level:** Looks for "junior", "senior", "lead" and bins to 0–3
-- **Years of experience:** Regex for "X years"; if not found, falls back to Ollama LLM via `src/llm_extraction.py`
-
-The cleaned text gets stored in the `cleaned_description` column, and the extracted metadata fills `required_degree`, `seniority_level`, and `min_years_experience` columns in the database.
-
-### Stage 3: Embedding into Vector Space
-
-Now we convert the cleaned job descriptions into dense vectors so we can do similarity search. `scripts/pipeline/embed_jobs.py` uses VoyageAI's `voyage-3.5-lite` model, which produces 1024-dimensional vectors.
-
-To keep costs down, the system batches embedding requests in groups of 128 (the API's hard limit) and includes retry logic with exponential backoff in case of transient failures. Vectors are serialized as float32 numpy arrays and stored directly as BLOBs in the SQLite database—no external vector database at this stage.
-
-The system tracks completion with an `embedded=1` flag, making the process resume-friendly: if embedding gets interrupted, re-running it skips jobs that were already vectorized. This matters when you're embedding millions of jobs.
-
-### Stage 4: Retrieving Candidate Jobs
-
-When a resume comes in, `src/retrieval.py` queries a ChromaDB instance that holds the job vectors in an HNSW (Hierarchical Navigable Small World) index. HNSW is a graph-based approximate nearest-neighbor algorithm—incredibly fast even with millions of vectors.
-
-The retrieval step is deliberately over-inclusive: it pulls the top 100 jobs by cosine distance. Optional metadata filters (degree, seniority, years) are applied _during_ the vector search as a ChromaDB `where` filter—ChromaDB evaluates both the vector distance and the filter condition together, so only jobs matching the filter are considered for the top-100 result set.
-
-The HNSW index uses `ef=400` during search (configured in `src/config.py`), trading a bit of speed for higher recall. The index build parameter `ef_construction` defaults to `100`; it can be raised by passing a higher value to `build_collection()` if you want better index quality at the cost of a slower build.
-
-### Stage 5: Reranking with a Cross-Encoder
-
-Top-100 jobs are still too many to show. The system now calls Cohere's `rerank-english-v3.0`, a cross-encoder model optimized for ranking relevance. Unlike embedding-based retrieval (which scores jobs in isolation), reranking scores each job _in context of the resume_, using both the resume and job description together.
-
-`src/reranking.py` narrows the top-100 down to a final top-10 (or whatever `top_k` the user requested, up to 50). The batch API includes rate-limit awareness: the system throttles to 7 seconds between requests and detects 429 (rate limit) responses, retrying immediately rather than backing off.
-
-For the cross-encoder to work well, we format each job compactly: title + location + seniority label. This gives the model enough context without overwhelming it.
-
-### Stage 6: Generating Grounded Explanations
-
-The final piece is explainability. Instead of just returning a score, the system runs an LLM to explain _why_ each match is good. This uses Ollama with a quantized `llama3.2:3b-instruct-q4_K_M` model (runs locally, ~1.6GB).
-
-The full generation pipeline in `src/generation.py` works like this:
-
-1. **Extract job requirements:** LLM reads the job description and pulls out a list of required skills and domain
-2. **Find matches:** LLM compares the resume skills against the job requirements
-3. **Filter hallucinations:** Verify that any mentioned skill actually appears in the job description (span-in-text check)
-4. **Generate explanation:** LLM summarizes the matches in plain English
-
-If the generation pipeline errors, the system falls back to a direct Ollama call using the first 500 characters of the resume and job description to produce a shorter, less grounded explanation.
-
-The system logs a warning when resumes or job descriptions exceed 8000 characters, but does not truncate—the full text is passed to the model. The model uses temperature 0.7 (enough variation for naturalness, but still deterministic) and nucleus sampling (top-p 0.9).
-
-## API Reference
-
-The FastAPI server exposes three endpoints: health, readiness, and matching.
-
-### `GET /health`
-
-Liveness probe—always returns 200 if the server is running.
+Run the held-out test evaluation with reranking:
 
 ```bash
-curl http://localhost:8000/health
+python scripts/eval/run_test_eval.py --db-path data/jobs.db
 ```
 
-### `GET /ready`
-
-Deep readiness check. Returns 200 only if all dependencies are healthy. Returns 503 if any fail. Useful for load balancers and orchestration systems.
-
-Checks:
-
-- SQLite database is reachable and contains the `jobs` table
-- ChromaDB vector index is reachable
-- VoyageAI is responsive (makes a live test embed call, not just a key presence check)
-- Ollama is running and has the required LLM model loaded
+Run dense-retrieval-only evaluation:
 
 ```bash
-curl http://localhost:8000/ready
+python scripts/eval/run_test_eval.py --db-path data/jobs.db --skip-rerank
 ```
 
-### `POST /match`
+The scripts write result and diagnostic files under the evaluation results directory and log the aggregate Precision@5 and Recall@10 values.
 
-The main endpoint. Takes a resume and returns the best job matches with explanations.
+## Setup
 
-**Request:**
-
-```json
-{
-  "resume": "string (min 50 chars, required)",
-  "top_k": "int (default 10, range 1–50, optional)",
-  "min_years_experience": "int | null (optional, -1=unknown)",
-  "seniority_level": "int | null (optional, 0–3, where 1=entry, 3=senior)",
-  "required_degree": "int | null (optional, 0–3, where 1=bachelor, 3=phd)"
-}
-```
-
-**Response:**
-
-```json
-{
-  "matches": [
-    {
-      "job_id": 42,
-      "title": "Senior Backend Engineer",
-      "company_name": "Example Corp",
-      "score": 0.95,
-      "explanation": "Your 5+ years of Python and Kubernetes experience matches...",
-      "absolute_url": "https://example.com/jobs/42"  // source_url from the job posting
-    }
-  ],
-  "resume_id": "abc123-...",
-  "corpus_warning": null
-}
-```
-
-The `corpus_warning` field is set when the generation pipeline finds no validated skill-match pairs between the resume and a job—meaning the LLM couldn't confirm a concrete skill overlap. This can happen even when jobs are returned. It's a signal that the corpus may be too narrow for this candidate's profile, not that the resume is a poor fit. If results feel thin, expanding the corpus is the fix.
-
-**Example:**
+### 1. Create the environment
 
 ```bash
-curl -X POST http://localhost:8000/match \
-  -H "Content-Type: application/json" \
-  -d '{
-    "resume": "Senior Python engineer with 7 years experience building microservices...",
-    "top_k": 5,
-    "seniority_level": 3
-  }'
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## Getting Started
+### 2. Configure environment variables
 
-### What You Need
+```bash
+cp .env.example .env
+```
 
-For production, you'll need Docker, Docker Compose, and Ollama running on your host machine. You'll also need API keys from three services:
+Local Qwen embeddings do **not** require an embedding API key. `COHERE_API_KEY` is required for reranking. Job-collection providers may require their own API keys depending on which collectors you enable.
 
-- **VoyageAI** ([console.voyageai.com](https://console.voyageai.com)) — for embeddings
-- **Cohere** ([dashboard.cohere.com](https://dashboard.cohere.com)) — for reranking
-- **RapidAPI, SerpAPI, Jooble** — for job collection (optional if you just want to test with existing data)
-
-First, pull the Ollama model locally:
+### 3. Pull the local LLM
 
 ```bash
 ollama pull llama3.2:3b-instruct-q4_K_M
 ```
 
-### Production Setup (Docker Compose)
+### 4. Collect or provide jobs
 
-The fastest path to a running system is to download the pre-built job database from the GitHub Actions cron run rather than running the full collection pipeline yourself.
+The normal job database path is:
 
-1. **Download the latest job database.** Go to the [Actions tab](https://github.com/luibaraj/Resume-Job-Matching-System/actions/workflows/collect.yml), open the most recent successful `Collect Jobs` run, and download the `jobs-db` artifact. Unzip it and place `jobs.db` in the `data/` directory:
-
-   ```bash
-   mkdir -p data
-   mv ~/Downloads/jobs.db data/jobs.db
-   ```
-
-2. **Preprocess and embed the jobs.** This cleans the raw descriptions and builds the ChromaDB vector index. You need `VOYAGE_API_KEY` for the embedding step:
-
-   ```bash
-   python scripts/pipeline/preprocess_jobs.py
-   VOYAGE_API_KEY=your_key python scripts/pipeline/embed_jobs.py
-   ```
-
-   The embedding step writes vectors to `data/chroma/` — this is what the API queries at runtime.
-
-3. **Pull the Ollama model on your host:**
-
-   ```bash
-   ollama pull llama3.2:3b-instruct-q4_K_M
-   ```
-
-4. **Configure environment:**
-
-   ```bash
-   cp .env.example .env
-   # Fill in at minimum: VOYAGE_API_KEY, COHERE_API_KEY
-   ```
-
-5. **Start the services:**
-
-   ```bash
-   ./start-services.sh
-   ```
-
-   This starts Ollama on the host, waits for it to be ready, builds and starts the Docker Compose services (FastAPI on port 8000, Nginx on port 80), and opens the UI in your browser when everything is up.
-
-6. **Verify everything is healthy:**
-
-   ```bash
-   curl http://localhost/ready
-   ```
-
-7. **Try a request:**
-
-   ```bash
-   curl -X POST http://localhost/match \
-     -H "Content-Type: application/json" \
-     -d '{
-       "resume": "I am a senior Python engineer with 7 years of experience...",
-       "top_k": 5
-     }'
-   ```
-
-### Development Setup (Local)
-
-For testing or development without Docker:
-
-1. **Install Python dependencies:**
-
-   ```bash
-   pip install -r fastapi_app/requirements.txt
-   ```
-
-2. **Run the data pipeline:**
-
-   ```bash
-   python -m data_pipeline.collect_jobs
-   python scripts/pipeline/preprocess_jobs.py
-   python scripts/pipeline/embed_jobs.py
-   ```
-
-3. **Start the FastAPI server:**
-
-   ```bash
-   cd fastapi_app
-   uvicorn api.main:app --host 0.0.0.0 --port 8000
-   ```
-
-4. **Test locally:**
-   ```bash
-   curl http://localhost:8000/health
-   curl http://localhost:8000/ready
-   ```
-
-## Environment Variables
-
-| Var                       | Required | Description                                                      |
-| ------------------------- | -------- | ---------------------------------------------------------------- |
-| `VOYAGE_API_KEY`          | ✓        | VoyageAI API key for embeddings                                  |
-| `COHERE_API_KEY`          | ✓        | Cohere API key for reranking                                     |
-| `CHROMA_DIR`              | ✓        | Path to ChromaDB persistent directory (e.g., `/app/data/chroma`) |
-| `CHROMA_COLLECTION`       | ✓        | ChromaDB collection name (e.g., `jobs`)                          |
-| `DB_PATH`                 | ✓        | Path to SQLite jobs database (e.g., `/app/data/jobs.db`)         |
-| `OLLAMA_BASE_URL`         | -        | Ollama endpoint (default: `http://localhost:11434`)              |
-| `LOG_LEVEL`               | -        | Logging verbosity: `INFO`, `DEBUG`, etc. (default: `INFO`)       |
-| `SCRAPE_DAYS`             | -        | Job collection window in days (default: `7`)                     |
-| **Data Pipeline Only**    | -        | -                                                                |
-| `X_RAPID_API`             | -        | RapidAPI key (for JSearch, JobSearch, JobsAPI)                   |
-| `SERPAPI_KEY`             | -        | SerpAPI key (for Google Jobs)                                    |
-| `JOOBLE_API_KEY`          | -        | Jooble API key (500/month cap)                                   |
-| `GREENHOUSE_BOARD_TOKENS` | -        | Comma-separated Greenhouse board tokens                          |
-| `ADZUNA_API`              | -        | Adzuna API token                                                 |
-| `ADZUNA_APP`              | -        | Adzuna app token                                                 |
-
-## Keeping the Job Corpus Fresh
-
-A GitHub Actions workflow (`.github/workflows/collect.yml`) runs the job collection pipeline automatically on a schedule: Monday, Wednesday, Friday at 6AM UTC. It:
-
-1. Pulls the previous database as an artifact
-2. Runs `python -m data_pipeline.collect_jobs` to fetch new jobs
-3. Uploads the updated database back to GitHub as an artifact (kept for 90 days)
-
-This means the corpus accumulates jobs over time without manual intervention. However, preprocessing and embedding are not yet automated—you currently run those locally when you deploy a fresh corpus. If the corpus grows large, you might want to add those as separate workflow jobs or run them on a faster machine.
-
-## Evaluating Quality
-
-The system includes a built-in evaluation harness for measuring retrieval and ranking quality. Here's how we benchmark:
-
-### Results
-
-Real test results on a held-out evaluation set:
-
-| Dataset | Precision@5 | Recall@10 | Resumes |
-| ------- | ----------- | --------- | ------- |
-| Tune    | **1.00**    | **0.94**  | 30      |
-| Test    | **0.90**    | **0.88**  | 20      |
-
-Precision@5 means: of the top-5 results, how many were valid matches? Recall@10 means: of all known good matches, what fraction did we catch in the top-10? These metrics come from evaluating the system on a corpus of 1000 real jobs plus synthetic ground truth.
-
-### How Evaluation Works
-
-Evaluating a matching system is tricky without ground truth. We solve this by synthetically generating known-good and known-bad job postings aligned to test resumes, then measuring whether the system finds the good ones and rejects the bad ones.
-
-The evaluation pipeline has these steps:
-
-1. **Generate synthetic positives:** Ollama creates 5 realistic job postings for each test resume (aligned to the resume's skills and experience level)
-2. **Generate synthetic negatives:** Ollama creates 3 intentionally mismatched jobs per resume (e.g., junior resume + senior job)
-3. **Stratify and split:** Allocate resumes into tune (30) and test (20) sets, stratified by seniority and domain to ensure balanced coverage
-4. **Evaluate on tune set:** Measure and optimize hyperparameters
-5. **Evaluate on test set:** Final benchmark on unseen resumes using the same corpus
-
-For each resume, the evaluation swaps its synthetic positives and negatives into the ChromaDB collection, runs the matching pipeline, and checks:
-
-- How many known-good jobs appeared in the top-100 retrieval? (**embedding hit**)
-- How many of those made it to the top-10 after reranking? (**rerank hit**)
-- Where did we lose them? (embedding vs reranking)
-
-This breakdown helps identify whether retrieval or reranking needs tuning.
-
-### Synthetic Data
-
-**Positives:** Each test resume gets 5 synthetic job postings generated by Ollama. The LLM reads the resume and creates realistic job descriptions (title, seniority, required years, domain, skills) that would actually match it. It then validates these (e.g., seniority levels must be valid) and repairs any that fail validation.
-
-**Negatives:** 3 intentional mismatches per resume—typically a seniority mismatch (junior candidate, senior job) plus two responsibility/domain mismatches. This tests whether the system correctly rejects bad fits.
-
-## Database Schema (SQLite)
-
-**`jobs` table:**
-
-```sql
-CREATE TABLE jobs (
-  id INTEGER PRIMARY KEY,
-  external_id TEXT,
-  source_system TEXT,
-  source_board TEXT,
-  title TEXT,
-  location TEXT,
-  description TEXT,                    -- raw HTML/text
-  cleaned_description TEXT,            -- preprocessed plain text
-  company_name TEXT,
-  source_url TEXT,
-  absolute_url TEXT,
-
-  embedding BLOB,                      -- float32 numpy array (serialized)
-  embedded INTEGER DEFAULT 0,          -- 0 or 1 flag
-
-  required_degree INTEGER DEFAULT 0,   -- 0=unknown, 1=bachelor, 2=master, 3=phd
-  seniority_level INTEGER DEFAULT 0,   -- 0=unknown, 1=entry, 2=mid, 3=senior
-  min_years_experience INTEGER DEFAULT -1,  -- -1=unknown
-
-  job_status TEXT DEFAULT 'active',    -- active, removed
-  scraped_at TEXT,
-  updated_date TEXT
-);
-
-CREATE TABLE collection_log (
-  id INTEGER PRIMARY KEY,
-  run_at TEXT,
-  source TEXT,
-  jobs_found INTEGER,
-  jobs_new INTEGER,
-  jobs_error INTEGER,
-  requests INTEGER,
-  errors TEXT
-);
+```text
+data/jobs.db
 ```
 
-## Docker Deployment
-
-### Multi-Stage Build
-
-**Dockerfile:** `docker/Dockerfile`
-
-- **Builder stage:** Python 3.11 + dependencies → `/install`
-- **Runtime stage:** Minimal Python 3.11-slim + copy installed packages
-- **Exposes:** Port 8000
-- **CMD:** `uvicorn fastapi_app.api.main:app --host 0.0.0.0 --port 8000`
-
-### Docker Compose
-
-**docker-compose.yml:**
-
-- **`app` service:** FastAPI container
-  - Mounts `./data:/app/data` (persistent SQLite + ChromaDB)
-  - Health check on `/health` endpoint
-  - Environment: `OLLAMA_BASE_URL=http://host.docker.internal:11434` (reaches host Ollama)
-  - Restart: unless-stopped
-- **`nginx` service:** Reverse proxy (Alpine)
-  - Port 80 → app:8000
-  - Configuration: `docker/nginx.conf`
-  - Restart: unless-stopped
-
-**Note:** Ollama runs **on host** (not in container), exposed via `host.docker.internal:11434` on Docker Desktop.
-
-## Troubleshooting
-
-### Health Checks
-
-Use the health endpoints to debug issues:
+Job collection is orchestrated by:
 
 ```bash
-# Quick liveness check
-curl http://localhost/health
-
-# Full dependency check (shows detailed errors)
-curl http://localhost/ready
+python data_pipeline/collect_jobs.py
 ```
 
-### Viewing Logs
+### 5. Preprocess jobs
 
 ```bash
-# FastAPI app output
-docker-compose logs -f app
-
-# Nginx reverse proxy output
-docker-compose logs -f nginx
-
-# Ollama (on host—check it's running)
-ollama list
+python scripts/pipeline/preprocess_jobs.py --db-path data/jobs.db
 ```
 
-### Common Problems
-
-**503 from /ready**
-→ Ollama is not running. Start it: `ollama serve`
-
-**Ollama model not found**
-→ Pull the model: `ollama pull llama3.2:3b-instruct-q4_K_M`
-
-**ChromaDB connection error**
-→ Check that `./data/chroma` exists and is writable
-
-**VoyageAI API key invalid**
-→ Verify your key in `.env` is correct and not expired
-
-**Cohere API returns 429 (rate limit)**
-→ This is handled automatically. The system throttles to 7 seconds between batch rerank requests
-
-### Inspecting the Database
+### 6. Embed jobs locally
 
 ```bash
-sqlite3 data/jobs.db
-
-# How many jobs do we have?
-SELECT job_status, COUNT(*) FROM jobs GROUP BY job_status;
-
-# How many jobs still need embedding?
-SELECT COUNT(*) FROM jobs WHERE embedded = 0;
-
-# What's the collection history?
-SELECT source, jobs_found, requests, errors FROM collection_log ORDER BY run_at DESC LIMIT 10;
+python scripts/pipeline/embed_jobs.py --db-path data/jobs.db
 ```
 
-## Code Organization
+This loads Qwen3-Embedding-0.6B through Sentence Transformers, embeds unembedded job descriptions, and stores the vectors in SQLite.
 
-The codebase is organized by pipeline stage and responsibility:
+### 7. Run resume matching
 
-- **`data_pipeline/`** — Orchestrator and 8 job collectors. Handles collection, deduplication, and logging.
-- **`scripts/pipeline/`** — Preprocessing, embedding, and matching. Run these in sequence to build the corpus.
-- **`scripts/eval/`** — Evaluation suite: synthetic data generation, stratification, and benchmarking.
-- **`src/`** — Core logic: embeddings, retrieval, reranking, generation, text cleaning, metadata extraction.
-- **`fastapi_app/`** — REST API server, health checks, request validation, tests.
-- **`docker/`** — Dockerfile (multi-stage) and Nginx configuration.
-- **`data/`** — Persistent storage: SQLite database, ChromaDB vectors, evaluation outputs.
+```bash
+python scripts/pipeline/match_jobs.py --db-path data/jobs.db
+```
 
-Each stage is modular—you can run parts independently or swap components as needed.
+The default resume source is:
 
-## Contact
+```text
+data/user_profile.txt
+```
 
-Questions? Open an issue or contact the team.
+The generated result file is:
+
+```text
+matched_jobs.md
+```
+
+## Important Modules
+
+```text
+src/embedding.py
+    Local Qwen embedding model loading and batch embedding
+
+src/retrieval.py
+    Chroma collection construction and HNSW retrieval
+
+src/reranking.py
+    Cohere cross-encoder reranking
+
+src/regex_extraction.py
+    Deterministic metadata extraction and filter construction
+
+src/llm_extraction.py
+    Optional local LLM fallback for metadata extraction
+
+src/generation.py
+    Grounded requirement/evidence matching and explanation generation
+
+scripts/pipeline/embed_jobs.py
+    Offline job embedding pipeline
+
+scripts/pipeline/match_jobs.py
+    End-to-end resume matching pipeline
+
+scripts/eval/run_tuning_eval.py
+    Tune-set retrieval evaluation
+
+scripts/eval/run_test_eval.py
+    Held-out test-set retrieval evaluation
+```
+
+## API
+
+The FastAPI application exposes:
+
+### `GET /health`
+
+Simple liveness check.
+
+### `GET /ready`
+
+Checks:
+
+- SQLite connectivity
+- ChromaDB availability
+- local Qwen embedding inference
+- Ollama/model availability
+
+### `POST /match`
+
+Embeds the resume locally, retrieves candidate jobs, reranks them, and returns matched jobs with explanations.
+
+## Design Notes
+
+### Why HNSW?
+
+HNSW (Hierarchical Navigable Small World) is a graph-based approximate nearest-neighbor index. It provides fast high-recall vector retrieval without exhaustively comparing the resume embedding against every job vector.
+
+### Why reranking after embeddings?
+
+Dense retrieval is fast and scalable, but each document is represented independently. A cross-encoder reranker evaluates the resume and candidate job together, which gives a stronger second-stage relevance signal over a much smaller candidate set.
+
+### Why local embeddings and local generation?
+
+Running Qwen embeddings and Llama generation locally reduces external API dependency, avoids per-embedding API cost, and keeps the core semantic representation and explanation generation under local control.
+
+## Current Scale
+
+The pipeline has been run end-to-end over **3.2K+ job postings**, including local Qwen embedding, HNSW indexing, top-100 retrieval, cross-encoder reranking, and local LLM generation.
+
+## Testing
+
+Run the test suite with:
+
+```bash
+pytest
+```
+
+For evaluation-specific checks:
+
+```bash
+pytest tests/test_eval_embedding_cache.py tests/test_metrics.py tests/test_retrieval.py
+```
+
+## Output Quality
+
+Retrieval/reranking and generation are intentionally separated. A job may be retrieved correctly even when the local explanation stage produces weak or unvalidated evidence. Retrieval metrics should therefore be measured independently from generation quality.
