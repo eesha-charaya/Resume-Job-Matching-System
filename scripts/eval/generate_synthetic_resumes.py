@@ -67,13 +67,14 @@ def build_rows() -> list[dict[str, str | int]]:
     rows: list[dict[str, str | int]] = []
     for idx, (seniority, domain) in enumerate(zip(seniorities, domains), start=1):
         years = YEARS_BY_SENIORITY[seniority]
+        year_word = "year" if years == 1 else "years"
         skills = SKILLS_BY_DOMAIN[domain]
         role = ROLE_BY_DOMAIN[domain]
         skills_csv = ", ".join(skills)
 
         resume = (
             f"{role}\n"
-            f"Professional Summary: {seniority.title()} {role.lower()} with {years} years "
+            f"Professional Summary: {seniority.title()} {role.lower()} with {years} {year_word} "
             f"of experience building and operating production software.\n"
             f"Skills: {skills_csv}\n"
             f"Experience: Delivered project {idx:02d} using {skills[0]} and {skills[1]}, "
