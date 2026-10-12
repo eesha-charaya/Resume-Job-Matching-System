@@ -23,8 +23,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Setup sys.path to import src modules
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
+# Add the project root so package imports like `src.*` and `eval.*` work
+# when this file is executed directly with `python scripts/eval/...`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.config import YEARS_UNKNOWN
 from eval.positive_gen.positives_pipeline import run_pipeline
@@ -47,7 +48,6 @@ def extract_skills_from_resume(resume_text: str) -> list[str]:
     Returns:
         List of skill strings (may be empty).
     """
-    # Find a "Skills:" section (case-insensitive)
     match = re.search(
         r"(?:skills|SKILLS|Skills)\s*:([^,\n]*(?:,[^,\n]*)*)",
         resume_text,
@@ -58,30 +58,17 @@ def extract_skills_from_resume(resume_text: str) -> list[str]:
 
     skills_str = match.group(1)
     skills = [s.strip() for s in skills_str.split(",") if s.strip()]
-    return skills[:4]  # Take first 4
+    return skills[:4]
 
 
 def build_resume_info(row: dict) -> ResumeInfo:
-    """
-    Build a ResumeInfo dict from a CSV row.
-
-    Args:
-        row: A single row from synthetic_resume.csv as a dict
-             with keys: id, resume, seniority, domain.
-
-    Returns:
-        ResumeInfo TypedDict compatible with the validation pipeline.
-    """
+    """Build a ResumeInfo dict from one synthetic-resume CSV row."""
     resume_text = row["resume"]
     seniority_str = row["seniority"].strip()
-
-    # Normalize seniority: capitalize first letter
     seniority = seniority_str.title()
 
-    # Extract years of experience, with seniority-based fallback
-    years = extract_years_with_llm(resume_text, model='llama3.2')
+    years = extract_years_with_llm(resume_text, model="llama3.2")
     if years == YEARS_UNKNOWN:
-        # Fallback map based on seniority
         fallback_map = {
             "Junior": 1,
             "Mid": 3,
@@ -90,13 +77,7 @@ def build_resume_info(row: dict) -> ResumeInfo:
         }
         years = fallback_map.get(seniority, 3)
 
-    # Extract primary skills
     primary_skills = extract_skills_from_resume(resume_text)
-    if not primary_skills:
-        # Fallback: empty list; validation/repair will handle it
-        primary_skills = []
-
-    # Domain directly from CSV
     domain = row["domain"].strip()
 
     return {
@@ -109,16 +90,7 @@ def build_resume_info(row: dict) -> ResumeInfo:
 
 
 def format_job_for_embedding(job: dict) -> str:
-    """
-    Format a JobSkeleton dict as embedding-ready plain text.
-
-    Args:
-        job: JobSkeleton dict with keys: title, seniority, years_required,
-             domain, primary_skills, secondary_skills, responsibilities.
-
-    Returns:
-        Embedding-ready plain-text string.
-    """
+    """Format a JobSkeleton dict as embedding-ready plain text."""
     primary_skills_str = ", ".join(job.get("primary_skills", []))
     secondary_skills_str = ", ".join(job.get("secondary_skills", []))
     responsibilities_str = "; ".join(job.get("responsibilities", []))
@@ -133,10 +105,6 @@ def format_job_for_embedding(job: dict) -> str:
 
 
 def main():
-    """
-    Main entry point: iterate resumes, run pipeline, write CSV.
-    """
-    # Parse arguments
     parser = argparse.ArgumentParser(description="Generate synthetic positive jobs")
     parser.add_argument(
         "--log-level",
@@ -146,7 +114,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # Configure logging (after argparse)
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="[%(asctime)s] %(levelname)s: %(message)s",
@@ -156,12 +123,10 @@ def main():
     input_csv = project_root / "data" / "eval" / "synthetic_resume.csv"
     output_csv = project_root / "data" / "eval" / "synthetic_job_descriptions.csv"
 
-    # Verify input exists
     if not input_csv.exists():
         logger.error("Input file not found: %s", input_csv)
         sys.exit(1)
 
-    # Ensure output directory exists
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info("Reading resumes from: %s", input_csv)
@@ -192,16 +157,14 @@ def main():
             resume_domain,
         )
 
-        # Build ResumeInfo for the pipeline
         resume_info = build_resume_info(row)
 
-        # Run the pipeline (target 5 jobs per resume)
         try:
             jobs = run_pipeline(
                 resume_text=resume_text,
                 resume_info=resume_info,
                 target_count=5,
-                output_path=None,  # Don't dump per-resume JSON
+                output_path=None,
             )
         except Exception as e:
             logger.error(
@@ -213,7 +176,6 @@ def main():
             )
             continue
 
-        # Convert each job to an output row
         for job in jobs:
             output_row = {
                 "id": str(uuid.uuid4()),
@@ -241,7 +203,6 @@ def main():
             total_collected,
         )
 
-    # Write CSV
     logger.info("Writing %d jobs to %s...", total_collected, output_csv)
     if all_rows:
         fieldnames = [
