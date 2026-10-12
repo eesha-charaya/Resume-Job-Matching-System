@@ -1,0 +1,73 @@
+"""
+Project-wide configuration constants.
+
+Environment variables (DB_PATH, GREENHOUSE_BOARD_TOKENS, etc.) are NOT read here;
+scripts load them via load_dotenv() and pass values as explicit arguments to src/
+functions where needed.
+"""
+
+import os
+
+# Embeddings
+EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-0.6B"
+EMBEDDING_DIM: int = 1024
+EMBEDDING_BATCH_SIZE: int = 128
+
+# Database
+DB_DEFAULT_PATH: str = "data/jobs.db"
+DB_CHUNK_SIZE: int = 512  # Batch size for processing large result sets
+
+# Chroma
+CHROMA_COLLECTION_NAME: str = "jobs"
+CHROMA_DEFAULT_DIR: str = "data/chroma"
+
+# Retrieval
+RETRIEVE_TOP_K: int = 100
+HNSW_EF_CONSTRUCTION: int = 400  # HNSW index build quality
+HNSW_EF: int = 400                # HNSW query recall
+
+# Reranking
+COHERE_RERANK_MODEL: str = "rerank-english-v3.0"
+RERANK_TOP_N: int = 10
+RERANK_MAX_RETRIES: int = 3
+RERANK_RETRY_BASE_DELAY: float = 2.0
+RERANK_INTER_REQUEST_DELAY: float = 7
+
+# Metadata extraction
+DEGREE_UNKNOWN: int = 0
+DEGREE_BACHELOR: int = 1
+DEGREE_MASTER: int = 2
+DEGREE_PHD: int = 3
+
+SENIORITY_UNKNOWN: int = 0
+SENIORITY_ENTRY: int = 1
+SENIORITY_MID: int = 2
+SENIORITY_SENIOR: int = 3
+
+YEARS_UNKNOWN: int = -1
+
+# LLM Fallback
+USE_LLM_FALLBACK: bool = os.getenv("USE_LLM_FALLBACK", "true").lower() == "true"
+
+# Generation
+OLLAMA_MODEL: str = "llama3.2:3b-instruct-q4_K_M"
+GENERATION_TEMPERATURE: float = 0.7
+GENERATION_TOP_P: float = 0.9
+GENERATION_MAX_TOKENS: int = 150
+SKELETON_MAX_TOKENS: int = 200
+VALIDATION_MAX_TOKENS: int = 50
+REPAIR_MAX_TOKENS: int = 200
+MAX_BATCH_SIZE: int = 2
+PROMPT_MAX_CHARS: int = 8000
+
+# Synthetic positives generation (per-field strategy)
+TARGET_RESPONSIBILITY_COUNT: int = 4
+SKILLS_MAX_TOKENS: int = 80
+RESPONSIBILITY_MAX_TOKENS: int = 60
+RESUME_EXTRACT_MAX_TOKENS: int = 10
+
+CORPUS_LIMITATION_MESSAGE: str = (
+    "No strongly matching jobs found in current corpus. "
+    "This indicates corpus limitations, not poor fit. "
+    "Recommend expanding job database or checking back later."
+)

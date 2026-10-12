@@ -1,0 +1,25 @@
+{
+  "queries": [
+    "AI engineer",
+    "machine learning engineer",
+    "data scientist",
+    "LLM engineer",
+    "NLP engineer",
+    "AI researcher",
+    "deep learning engineer",
+    "data engineer",
+    "MLOps engineer",
+    "analytics engineer",
+    "computer vision engineer"
+  ],
+  "pools": {
+    "jsearch": 38,
+    "jobsearch": 50,
+    "jobsapi": 50,
+    "serpapi": 21,
+    "arbeitnow": 20,
+    "jobicy": 12,
+    "jooble": 38
+  },
+  "jobicy_tags": ["engineer", "data", "python", "cloud", "analytics", "devops", "backend", "fullstack", "java", "sql", "react", "typescript"]
+}

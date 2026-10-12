@@ -1,0 +1,40 @@
+# HTTP
+requests==2.32.3
+urllib3==2.2.2
+python-dotenv>=1.0.0
+
+# Embeddings
+sentence-transformers>=3.0.0
+numpy>=1.26.0
+google-genai>=1.0.0
+
+# Data Processing
+pandas>=2.0.0
+
+# HTML Parsing
+beautifulsoup4>=4.12.0
+
+# Vector Database
+chromadb>=0.4.0,<=1.5.5
+
+# Reranking
+cohere>=5.0.0
+
+# Local LLM Integration
+ollama>=0.1.0
+
+# FastAPI Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Testing
+pytest==8.3.2
+pytest-cov==5.0.0
+pytest-mock==3.14.0
+pytest-asyncio==0.24.0
+
+# Experiment Tracking (eval only)
+mlflow>=2.14.0
+
+# NOTE: Some transitive dependencies may emit harmless SWIG-related
+# deprecation warnings under Python 3.11+; src/__init__.py suppresses them.

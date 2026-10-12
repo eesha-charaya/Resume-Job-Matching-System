@@ -1,0 +1,73 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment                                                                                                               
+.env                                                                                                                     
+.python-version 
+.env
+.env.local
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Bind mount directory — track dir via .gitkeep, ignore contents
+data/*
+!data/.gitkeep
+
+# Models — track dir via .gitkeep, ignore downloaded model files
+models/*
+!models/.gitkeep
+
+
+# matched_jobs.py
+matched_jobs.md
+
+
+
+
+
+# AI Coding
+.aider*
+.Claude
+CONVENTIONS.md
+
+
+
+
+
+
+architecture
