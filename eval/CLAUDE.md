@@ -23,7 +23,8 @@ Eval sub-package for synthetic data generation and pipeline evaluation. Modular 
 - Template placeholder is `{}` in query, not `%s`
 
 **embedding_cache.py**
-- `.npz` + `.hash` caching for VoyageAI calls
+- `.npz` + `.hash` caching for local Qwen embeddings
+- Cache fingerprint includes embedding model identity and source text
 - Numpy constraint: npz keys are strings; int resume IDs cast to/from str at boundaries
 
 **collection.py**
