@@ -1,6 +1,6 @@
 # tests/CLAUDE.md
 
-19 test files using `pytest`. External services (Ollama, VoyageAI, Cohere, ChromaDB) are mocked except noted.
+19 test files using `pytest`. External services (Ollama, Cohere, and persistent ChromaDB) are mocked except noted; local Qwen embedding inference is represented with SentenceTransformer-compatible mocks where needed.
 
 ## Test Coverage Map
 
@@ -33,10 +33,11 @@
 
 ## Key Non-Obvious
 - `test_retrieval.py` uses real in-memory ChromaDB (ephemeral collections) — only test bypassing mock architecture
+- Embedding tests mock the local encoder interface (`encode`) or `embed_batch`; they do not require an external embedding API key
 - Backwards-compat test aliases in `negatives_repair.py` (`_format_fields_for_prompt`, `_merge_repaired_fields`) — do NOT remove (tests import them)
 
 ## Run Tests
 ```bash
-pytest                  # all
-pytest --cov=src       # with coverage
+pytest
+pytest --cov=src
 ```
