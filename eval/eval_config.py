@@ -52,5 +52,7 @@ TEST_RESUME_EMBEDDINGS_HASH: str = "data/eval/test/resume_embeddings.hash"
 TEST_SAMPLED_JOBS_HASH: str = "data/eval/test/sampled_jobs.hash"
 
 # MLflow Tracking
-MLFLOW_TRACKING_URI: str = "data/eval/mlflow"
+# MLflow's filesystem tracking backend is deprecated/maintenance-only in newer
+# releases, so use a lightweight local SQLite backend instead.
+MLFLOW_TRACKING_URI: str = "sqlite:///data/eval/mlflow.db"
 MLFLOW_EXPERIMENT_NAME: str = "resume-job-matching-rag"
