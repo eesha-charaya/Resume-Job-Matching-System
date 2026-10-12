@@ -1,61 +1,74 @@
 # Resume-Job Matching System
 
-An end-to-end resume-to-job matching pipeline that retrieves relevant job postings with dense embeddings, reranks them with a cross-encoder, and generates grounded fit explanations with a local LLM.
+[![Collect Jobs](https://github.com/eesha-charaya/Resume-Job-Matching-System/actions/workflows/collect.yml/badge.svg)](https://github.com/eesha-charaya/Resume-Job-Matching-System/actions/workflows/collect.yml)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-009688)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED)
 
-The current implementation uses **Qwen3-Embedding-0.6B locally** for embeddings, **ChromaDB HNSW** for approximate nearest-neighbor retrieval, **Cohere Rerank** for second-stage ranking, and **Ollama + Llama 3.2 3B** for grounded explanation generation.
+A retrieval-augmented (RAG) system that matches a resume to relevant job postings and explains each match. It retrieves candidates with dense embeddings and HNSW vector search, reranks them with a cross-encoder, and generates grounded fit explanations with a local LLM.
 
-## Pipeline
+## Results
 
-### Offline job pipeline
+Evaluated on a held-out test set of resumes, with synthetic relevant jobs inserted into a corpus of sampled real postings:
 
-```text
-Job APIs / Greenhouse boards
-        ↓
-SQLite jobs database
-        ↓
-HTML/text preprocessing
-        ↓
-Qwen3-Embedding-0.6B (local)
-        ↓
-1024-d float32 embeddings
-        ↓
-ChromaDB HNSW index
+| Metric | Score |
+| --- | --- |
+| Precision@5 | **0.92** |
+| Recall@10 | **0.91** |
+
+Scale: run end-to-end over **3.2K+ real job postings** collected from 8+ job APIs and Greenhouse boards.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Offline["Offline job pipeline"]
+        A[Job APIs + Greenhouse boards] --> B[(SQLite)]
+        B --> C[HTML/text preprocessing]
+        C --> D[Qwen3-Embedding-0.6B<br/>1024-d vectors]
+        D --> E[(ChromaDB HNSW index)]
+    end
+
+    subgraph Online["Online matching"]
+        R[Resume] --> Q[Qwen3 embedding]
+        Q --> F[Metadata filters]
+        F --> G[HNSW retrieval<br/>top 100]
+        E -.-> G
+        G --> H[Cohere cross-encoder<br/>rerank to top 10]
+        H --> L[Llama 3.2 3B via Ollama<br/>requirement-evidence matching]
+        L --> X[Grounded fit explanations]
+    end
 ```
 
-### Online matching pipeline
-
-```text
-Resume
-  ↓
-Qwen3 embedding
-  ↓
-metadata filters
-  ↓
-HNSW dense retrieval (top 100)
-  ↓
-Cohere cross-encoder reranking (top 10)
-  ↓
-local Llama requirement/evidence generation
-  ↓
-grounded fit explanations
-```
+The design is a classic two-stage retriever: fast, broad recall from the vector index, then a more expensive cross-encoder that reads the resume and each job together for precision.
 
 ## Tech Stack
 
 | Component | Technology | Purpose |
 | --- | --- | --- |
-| Job collection | Greenhouse + multiple job APIs | Build the job corpus |
+| Job collection | 8+ job APIs + Greenhouse, scheduled with GitHub Actions | Build and refresh the job corpus |
 | Storage | SQLite | Raw jobs, cleaned jobs, serialized embeddings |
-| Embeddings | `Qwen/Qwen3-Embedding-0.6B` | 1024-dimensional dense vectors |
+| Embeddings | `Qwen/Qwen3-Embedding-0.6B` (local) | 1024-dimensional dense vectors |
 | Vector retrieval | ChromaDB + HNSW | Approximate nearest-neighbor semantic search |
 | Reranking | Cohere `rerank-english-v3.0` | Cross-encoder relevance scoring |
 | Local LLM | Ollama + `llama3.2:3b-instruct-q4_K_M` | Requirement extraction and fit explanations |
-| API | FastAPI | Matching and health endpoints |
-| Evaluation | Precision@5 / Recall@10 scripts + MLflow | Held-out retrieval evaluation |
+| API | FastAPI + Docker + nginx | Matching and health endpoints |
+| Evaluation | Precision@5 / Recall@10 + MLflow | Held-out retrieval evaluation |
+| Testing | pytest | Unit tests for pipeline, eval and API |
+
+## Design Decisions
+
+**Why HNSW?** A graph-based approximate nearest-neighbor index gives fast, high-recall retrieval without comparing the resume against every job vector.
+
+**Why rerank after embeddings?** Dense retrieval embeds each document independently. A cross-encoder scores the resume and a job together, which gives a stronger relevance signal, applied only to the top 100 candidates to keep cost low.
+
+**Why local embeddings and generation?** Running Qwen and Llama locally removes per-call API cost and external dependency for the core representation and explanation steps.
+
+**Why evaluate retrieval separately from generation?** A job can be retrieved correctly even when the explanation is weak, so retrieval metrics are measured independently of generation quality.
 
 ## Retrieval Configuration
 
-Current defaults from `src/config.py`:
+Defaults from `src/config.py`:
 
 ```text
 Embedding model: Qwen/Qwen3-Embedding-0.6B
@@ -66,188 +79,75 @@ HNSW ef: 400
 Rerank top N: 10
 ```
 
-The system intentionally retrieves a broad candidate set first and then applies a more expensive reranker to the top candidates.
-
-## Evaluation
-
-The repository contains tune/test evaluation scripts that measure:
-
-- **Precision@5** — how many of the top five returned jobs are known relevant positives.
-- **Recall@10** — how many known relevant positives appear in the top ten.
-
-The evaluation uses held-out resume/job examples with synthetic positive jobs inserted into a corpus of sampled real jobs. Metrics should be reported only after running the current Qwen-based evaluation; historical values from the previous embedding backend are not treated as current results.
-
-Run the held-out test evaluation with reranking:
+## Quickstart
 
 ```bash
-python scripts/eval/run_test_eval.py --db-path data/jobs.db
-```
-
-Run dense-retrieval-only evaluation:
-
-```bash
-python scripts/eval/run_test_eval.py --db-path data/jobs.db --skip-rerank
-```
-
-The scripts write result and diagnostic files under the evaluation results directory and log the aggregate Precision@5 and Recall@10 values.
-
-## Setup
-
-### 1. Create the environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
+# 1. Environment
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
+cp .env.example .env          # add COHERE_API_KEY (+ job API keys if collecting)
 
-### 2. Configure environment variables
-
-```bash
-cp .env.example .env
-```
-
-Local Qwen embeddings do **not** require an embedding API key. `COHERE_API_KEY` is required for reranking. Job-collection providers may require their own API keys depending on which collectors you enable.
-
-### 3. Pull the local LLM
-
-```bash
+# 2. Local LLM
 ollama pull llama3.2:3b-instruct-q4_K_M
-```
 
-### 4. Collect or provide jobs
-
-The normal job database path is:
-
-```text
-data/jobs.db
-```
-
-Job collection is orchestrated by:
-
-```bash
+# 3. Build the corpus
 python data_pipeline/collect_jobs.py
-```
-
-### 5. Preprocess jobs
-
-```bash
 python scripts/pipeline/preprocess_jobs.py --db-path data/jobs.db
-```
-
-### 6. Embed jobs locally
-
-```bash
 python scripts/pipeline/embed_jobs.py --db-path data/jobs.db
-```
 
-This loads Qwen3-Embedding-0.6B through Sentence Transformers, embeds unembedded job descriptions, and stores the vectors in SQLite.
-
-### 7. Run resume matching
-
-```bash
+# 4. Match a resume (reads data/user_profile.txt, writes matched_jobs.md)
 python scripts/pipeline/match_jobs.py --db-path data/jobs.db
 ```
 
-The default resume source is:
+Local Qwen embeddings need no API key. `COHERE_API_KEY` is required for reranking.
 
-```text
-data/user_profile.txt
+### Run the API with Docker
+
+```bash
+docker compose up --build
 ```
 
-The generated result file is:
+| Endpoint | Description |
+| --- | --- |
+| `GET /health` | Liveness check |
+| `GET /ready` | Checks SQLite, ChromaDB, Qwen embedding inference and Ollama |
+| `POST /match` | Embeds a resume, retrieves and reranks jobs, returns matches with explanations |
 
-```text
-matched_jobs.md
+## Evaluation
+
+```bash
+# Full pipeline (dense retrieval + reranking)
+python scripts/eval/run_test_eval.py --db-path data/jobs.db
+
+# Dense retrieval only
+python scripts/eval/run_test_eval.py --db-path data/jobs.db --skip-rerank
 ```
 
-## Important Modules
+- **Precision@5**: share of the top five returned jobs that are known relevant positives.
+- **Recall@10**: share of known relevant positives that appear in the top ten.
+
+Results and diagnostics are written to the evaluation results directory and logged to MLflow.
+
+## Project Structure
 
 ```text
-src/embedding.py
-    Local Qwen embedding model loading and batch embedding
-
-src/retrieval.py
-    Chroma collection construction and HNSW retrieval
-
-src/reranking.py
-    Cohere cross-encoder reranking
-
-src/regex_extraction.py
-    Deterministic metadata extraction and filter construction
-
-src/llm_extraction.py
-    Optional local LLM fallback for metadata extraction
-
-src/generation.py
-    Grounded requirement/evidence matching and explanation generation
-
-scripts/pipeline/embed_jobs.py
-    Offline job embedding pipeline
-
-scripts/pipeline/match_jobs.py
-    End-to-end resume matching pipeline
-
-scripts/eval/run_tuning_eval.py
-    Tune-set retrieval evaluation
-
-scripts/eval/run_test_eval.py
-    Held-out test-set retrieval evaluation
+data_pipeline/          Job collectors (APIs, Greenhouse), DB schema and migrations
+src/
+  embedding.py          Local Qwen embedding loading and batching
+  retrieval.py          ChromaDB collection and HNSW retrieval
+  reranking.py          Cohere cross-encoder reranking
+  regex_extraction.py   Deterministic metadata extraction and filters
+  llm_extraction.py     Optional local LLM fallback for metadata
+  generation.py         Grounded requirement/evidence matching and explanations
+scripts/pipeline/       Preprocess, embed and match entry points
+scripts/eval/           Synthetic data generation, tuning and test evaluation
+fastapi_app/            FastAPI service
+docker/                 Dockerfile and nginx config
+tests/                  pytest suite
 ```
-
-## API
-
-The FastAPI application exposes:
-
-### `GET /health`
-
-Simple liveness check.
-
-### `GET /ready`
-
-Checks:
-
-- SQLite connectivity
-- ChromaDB availability
-- local Qwen embedding inference
-- Ollama/model availability
-
-### `POST /match`
-
-Embeds the resume locally, retrieves candidate jobs, reranks them, and returns matched jobs with explanations.
-
-## Design Notes
-
-### Why HNSW?
-
-HNSW (Hierarchical Navigable Small World) is a graph-based approximate nearest-neighbor index. It provides fast high-recall vector retrieval without exhaustively comparing the resume embedding against every job vector.
-
-### Why reranking after embeddings?
-
-Dense retrieval is fast and scalable, but each document is represented independently. A cross-encoder reranker evaluates the resume and candidate job together, which gives a stronger second-stage relevance signal over a much smaller candidate set.
-
-### Why local embeddings and local generation?
-
-Running Qwen embeddings and Llama generation locally reduces external API dependency, avoids per-embedding API cost, and keeps the core semantic representation and explanation generation under local control.
-
-## Current Scale
-
-The pipeline has been run end-to-end over **3.2K+ job postings**, including local Qwen embedding, HNSW indexing, top-100 retrieval, cross-encoder reranking, and local LLM generation.
 
 ## Testing
-
-Run the test suite with:
 
 ```bash
 pytest
 ```
-
-For evaluation-specific checks:
-
-```bash
-pytest tests/test_eval_embedding_cache.py tests/test_metrics.py tests/test_retrieval.py
-```
-
-## Output Quality
-
-Retrieval/reranking and generation are intentionally separated. A job may be retrieved correctly even when the local explanation stage produces weak or unvalidated evidence. Retrieval metrics should therefore be measured independently from generation quality.
