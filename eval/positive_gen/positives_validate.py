@@ -63,7 +63,7 @@ def _parse_year_parts(years_str: str) -> list[int]:
     text = str(years_str).strip()
     if not text:
         return []
-    if not re.fullmatch(r"\d+\s*(?:-\s*\d+)?", text):
+    if not re.fullmatch(r"\d+\s*(?:-\s*\d+)*", text):
         return []
     return [int(x.strip()) for x in text.split("-")]
 
@@ -137,10 +137,18 @@ def _build_resume_job_alignment_prompt(
     job_skills: list[str],
     job_responsibilities: list[str],
 ) -> str:
-    return f"""Resume text:
+    return f"""Resume:
+- Seniority: {resume_seniority}
+- Experience: {resume_years} years
+- Primary Skills: {", ".join(resume_skills)}
+- Resume text:
 {resume_text}
 
-Generated job responsibilities:
+Generated Job:
+- Seniority: {job_seniority}
+- YearsRequired: {job_years}
+- PrimarySkills: {", ".join(job_skills)}
+- Responsibilities:
 - {chr(10).join(job_responsibilities)}
 
 Exact seniority, experience, and skill-overlap checks have already passed.
