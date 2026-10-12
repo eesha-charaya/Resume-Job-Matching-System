@@ -28,9 +28,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Setup sys.path to import src modules and sibling script
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Add the project root so package imports like `src.*`, `eval.*`, and
+# `scripts.*` work when this file is executed directly.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import ollama
 
@@ -45,7 +45,6 @@ from eval.positive_gen.positives_validate import ResumeInfo
 
 # Reuse helpers from the positives script
 from scripts.eval.generate_synthetic_positives import (
-    extract_skills_from_resume,
     build_resume_info,
     format_job_for_embedding,
 )
@@ -64,16 +63,6 @@ def run_negatives_for_resume(
 
     Runs the generate → validate → repair loop, collecting valid skeletons
     until target_count is reached or max_attempts is exhausted.
-
-    Args:
-        resume_info: ResumeInfo dict with resume_text, seniority, domain, skills, years_experience.
-        mismatch_type: Type of mismatch ("seniority", "responsibility").
-        target_count: Number of valid skeletons to collect.
-        model: Ollama model name.
-
-    Returns:
-        List of validated JobSkeleton dicts (may be shorter than target_count
-        if max_attempts was exhausted).
     """
     collected: list[dict] = []
     total_attempts = 0
@@ -81,25 +70,32 @@ def run_negatives_for_resume(
     discard_count = 0
 
     logger.info(
-        f"[{mismatch_type}] Starting: target={target_count}, "
-        f"max_attempts={max_attempts}, model={model}"
+        "[%s] Starting: target=%d, max_attempts=%d, model=%s",
+        mismatch_type,
+        target_count,
+        max_attempts,
+        model,
     )
 
     while len(collected) < target_count:
         if total_attempts >= max_attempts:
             logger.warning(
-                f"[{mismatch_type}] Safety cap reached ({max_attempts} attempts). "
-                f"Collected {len(collected)}/{target_count} jobs."
+                "[%s] Safety cap reached (%d attempts). Collected %d/%d jobs.",
+                mismatch_type,
+                max_attempts,
+                len(collected),
+                target_count,
             )
             break
 
         total_attempts += 1
         logger.info(
-            f"[{mismatch_type}] Attempt {total_attempts}/{max_attempts} — "
-            f"generating skeleton..."
+            "[%s] Attempt %d/%d — generating skeleton...",
+            mismatch_type,
+            total_attempts,
+            max_attempts,
         )
 
-        # Step 1: Generate
         try:
             job, mismatch_context = generate_mismatched_skeleton(
                 resume_info=resume_info,
@@ -107,22 +103,20 @@ def run_negatives_for_resume(
                 mismatch_type=mismatch_type,
             )
         except ValueError as e:
-            logger.warning(
-                f"[{mismatch_type}] Generation parse/value error: {e}"
-            )
+            logger.warning("[%s] Generation parse/value error: %s", mismatch_type, e)
             continue
         except (ollama.RequestError, ollama.ResponseError) as e:
-            logger.error(
-                f"[{mismatch_type}] Ollama error during generation: {e}"
-            )
+            logger.error("[%s] Ollama error during generation: %s", mismatch_type, e)
             continue
 
         logger.info(
-            f"[{mismatch_type}] Generated: title='{job['title']}', "
-            f"seniority={job['seniority']}, domain={job['domain']}"
+            "[%s] Generated: title='%s', seniority=%s, domain=%s",
+            mismatch_type,
+            job["title"],
+            job["seniority"],
+            job["domain"],
         )
 
-        # Step 2: Validate
         try:
             validation = validate_mismatched_skeleton(
                 job=job,
@@ -131,26 +125,25 @@ def run_negatives_for_resume(
                 mismatch_type=mismatch_type,
             )
         except (ollama.RequestError, ollama.ResponseError) as e:
-            logger.error(
-                f"[{mismatch_type}] Ollama error during validation: {e}"
-            )
+            logger.error("[%s] Ollama error during validation: %s", mismatch_type, e)
             continue
 
         if validation["passed"]:
             collected.append(job)
             logger.info(
-                f"[{mismatch_type}] Validation PASSED — "
-                f"collected {len(collected)}/{target_count}"
+                "[%s] Validation PASSED — collected %d/%d",
+                mismatch_type,
+                len(collected),
+                target_count,
             )
             continue
 
-        # Step 3: Repair
         failed_check = validation["failed_check"] or "structural"
         logger.warning(
             "[%s] Validation FAILED at '%s': %s",
             mismatch_type,
             failed_check,
-            validation['reason'],
+            validation["reason"],
         )
         logger.info("[%s] Attempting repair...", mismatch_type)
 
@@ -165,11 +158,7 @@ def run_negatives_for_resume(
                 mismatch_type=mismatch_type,
             )
         except (ollama.RequestError, ollama.ResponseError) as e:
-            logger.error(
-                "[%s] Ollama error during repair: %s",
-                mismatch_type,
-                e,
-            )
+            logger.error("[%s] Ollama error during repair: %s", mismatch_type, e)
             discard_count += 1
             continue
 
@@ -178,7 +167,7 @@ def run_negatives_for_resume(
             logger.info(
                 "[%s] Repair SUCCEEDED (%d attempt(s)) — collected %d/%d",
                 mismatch_type,
-                repair_result['attempts'],
+                repair_result["attempts"],
                 len(collected),
                 target_count,
             )
@@ -187,8 +176,8 @@ def run_negatives_for_resume(
             logger.warning(
                 "[%s] Repair FAILED after %d attempt(s) — discarding. Reason: %s",
                 mismatch_type,
-                repair_result['attempts'],
-                repair_result['discard_reason'],
+                repair_result["attempts"],
+                repair_result["discard_reason"],
             )
 
     logger.info(
@@ -202,10 +191,6 @@ def run_negatives_for_resume(
 
 
 def main():
-    """
-    Main entry point: iterate resumes, run negatives pipeline, write CSV.
-    """
-    # Parse arguments
     parser = argparse.ArgumentParser(description="Generate synthetic negative jobs")
     parser.add_argument(
         "--log-level",
@@ -213,9 +198,14 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO)",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Process only the first N resumes (useful for smoke tests)",
+    )
     args = parser.parse_args()
 
-    # Configure logging (after argparse)
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="[%(asctime)s] %(levelname)s: %(message)s",
@@ -223,29 +213,43 @@ def main():
 
     project_root = Path(__file__).resolve().parent.parent.parent
     input_csv = project_root / "data" / "eval" / "synthetic_resume.csv"
-    output_csv = (
-        project_root / "data" / "eval" / "synthetic_negative_job_descriptions.csv"
-    )
+    output_csv = project_root / "data" / "eval" / "synthetic_negative_job_descriptions.csv"
 
-    # Verify input exists
     if not input_csv.exists():
         logger.error("Input file not found: %s", input_csv)
         sys.exit(1)
 
-    # Ensure output directory exists
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Reading resumes from: %s", input_csv)
-    logger.info("Writing output to: %s", output_csv)
+    with open(input_csv, "r", encoding="utf-8") as f:
+        resumes = list(csv.DictReader(f))
+
+    if args.limit is not None:
+        if args.limit < 1:
+            parser.error("--limit must be >= 1")
+        resumes = resumes[: args.limit]
+
+    logger.info("Loaded %d resumes. Starting negatives generation...", len(resumes))
 
     all_rows = []
     total_collected = 0
 
-    with open(input_csv, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        resumes = list(reader)
-
-    logger.info("Loaded %d resumes. Starting negatives generation...", len(resumes))
+    fieldnames = [
+        "id",
+        "resume_id",
+        "title",
+        "seniority",
+        "years_required",
+        "domain",
+        "primary_skills",
+        "secondary_skills",
+        "responsibilities",
+        "resume_seniority",
+        "resume_domain",
+        "generated_at",
+        "job_description",
+        "mismatch_type",
+    ]
 
     for idx, row in enumerate(resumes, 1):
         resume_id = row["id"]
@@ -262,20 +266,12 @@ def main():
             resume_domain,
         )
 
-        # Skip empty resumes
         if not resume_text.strip():
-            logger.warning(
-                "[%d/%d] Empty resume text for resume_id=%s. Skipping.",
-                idx,
-                len(resumes),
-                resume_id,
-            )
+            logger.warning("[%d/%d] Empty resume text; skipping.", idx, len(resumes))
             continue
 
-        # Build ResumeInfo for the pipeline
         resume_info = build_resume_info(row)
 
-        # Define per-resume targets: (mismatch_type, target_count)
         generation_tasks = [
             ("seniority", 1),
             ("responsibility", 2),
@@ -306,29 +302,25 @@ def main():
                 )
                 continue
 
-            # Convert each job to an output row
             for job in jobs:
-                output_row = {
-                    "id": str(uuid.uuid4()),
-                    "resume_id": resume_id,
-                    "title": job.get("title", ""),
-                    "seniority": job.get("seniority", ""),
-                    "years_required": job.get("years_required", ""),
-                    "domain": job.get("domain", ""),
-                    "primary_skills": "; ".join(job.get("primary_skills", [])),
-                    "secondary_skills": "; ".join(
-                        job.get("secondary_skills", [])
-                    ),
-                    "responsibilities": "; ".join(
-                        job.get("responsibilities", [])
-                    ),
-                    "resume_seniority": resume_seniority,
-                    "resume_domain": resume_domain,
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "job_description": format_job_for_embedding(job),
-                    "mismatch_type": mismatch_type,
-                }
-                all_rows.append(output_row)
+                all_rows.append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "resume_id": resume_id,
+                        "title": job.get("title", ""),
+                        "seniority": job.get("seniority", ""),
+                        "years_required": job.get("years_required", ""),
+                        "domain": job.get("domain", ""),
+                        "primary_skills": "; ".join(job.get("primary_skills", [])),
+                        "secondary_skills": "; ".join(job.get("secondary_skills", [])),
+                        "responsibilities": "; ".join(job.get("responsibilities", [])),
+                        "resume_seniority": resume_seniority,
+                        "resume_domain": resume_domain,
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "job_description": format_job_for_embedding(job),
+                        "mismatch_type": mismatch_type,
+                    }
+                )
                 total_collected += 1
 
             logger.info(
@@ -340,6 +332,13 @@ def main():
                 target_count,
             )
 
+        # Checkpoint after every resume so completed work survives interruption.
+        if all_rows:
+            with open(output_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(all_rows)
+
         logger.info(
             "[%d/%d] Resume done. Total so far: %d",
             idx,
@@ -347,34 +346,10 @@ def main():
             total_collected,
         )
 
-    # Write CSV
-    logger.info("Writing %d jobs to %s...", total_collected, output_csv)
     if all_rows:
-        fieldnames = [
-            "id",
-            "resume_id",
-            "title",
-            "seniority",
-            "years_required",
-            "domain",
-            "primary_skills",
-            "secondary_skills",
-            "responsibilities",
-            "resume_seniority",
-            "resume_domain",
-            "generated_at",
-            "job_description",
-            "mismatch_type",
-        ]
-        with open(output_csv, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_rows)
-        logger.info("Wrote %d rows to %s", len(all_rows), output_csv)
+        logger.info("Generation complete. Wrote %d rows to %s", len(all_rows), output_csv)
     else:
-        logger.warning("No jobs collected. CSV will be empty.")
-
-    logger.info("Generation complete. Total collected: %d", total_collected)
+        logger.warning("No jobs collected. CSV was not written.")
 
 
 if __name__ == "__main__":
