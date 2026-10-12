@@ -17,8 +17,8 @@ MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
 def create_client(api_key: str | None = None) -> SentenceTransformer:
     """Create and return the local embedding model.
 
-    ``api_key`` is accepted only for backwards compatibility with older callers
-    and is ignored. The model runs locally and does not require a Voyage API key.
+    ``api_key`` is accepted for compatibility with older callers and is ignored.
+    The model runs locally and does not require an embedding API key.
     """
     logger.info("Loading local embedding model: %s", MODEL_NAME)
     return SentenceTransformer(MODEL_NAME)
@@ -34,8 +34,8 @@ def embed_batch(
 ) -> list[np.ndarray]:
     """Embed a batch of texts with Qwen3-Embedding-0.6B.
 
-    The extra arguments are retained for compatibility with the existing
-    pipeline/evaluation interfaces; local inference does not use API retries.
+    Extra arguments are retained for compatibility with existing pipeline and
+    evaluation interfaces; local inference does not use API retries.
     """
     if not texts:
         raise ValueError("texts must be non-empty")
