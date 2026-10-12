@@ -21,23 +21,30 @@ Scale: run end-to-end over **3.2K+ real job postings** collected from 8+ job API
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Offline["Offline job pipeline"]
-        A[Job APIs + Greenhouse boards] --> B[(SQLite)]
-        B --> C[HTML/text preprocessing]
-        C --> D[Qwen3-Embedding-0.6B<br/>1024-d vectors]
-        D --> E[(ChromaDB HNSW index)]
+flowchart TB
+    subgraph Offline["① Offline job pipeline"]
+        direction LR
+        A[Job APIs +<br/>Greenhouse] --> B[(SQLite)]
+        B --> C[Preprocess<br/>HTML/text]
+        C --> D[Qwen3<br/>embeddings<br/>1024-d]
+        D --> E[(ChromaDB<br/>HNSW index)]
     end
 
-    subgraph Online["Online matching"]
-        R[Resume] --> Q[Qwen3 embedding]
-        Q --> F[Metadata filters]
-        F --> G[HNSW retrieval<br/>top 100]
-        E -.-> G
-        G --> H[Cohere cross-encoder<br/>rerank to top 10]
-        H --> L[Llama 3.2 3B via Ollama<br/>requirement-evidence matching]
-        L --> X[Grounded fit explanations]
+    subgraph Retrieve["② Online retrieval"]
+        direction LR
+        R[Resume] --> Q[Qwen3<br/>embedding]
+        Q --> F[Metadata<br/>filters]
+        F --> G[HNSW search<br/>top 100]
     end
+
+    subgraph Rank["③ Rerank and explain"]
+        direction LR
+        H[Cohere<br/>cross-encoder<br/>top 10] --> L[Llama 3.2 3B<br/>evidence<br/>matching]
+        L --> X[Grounded fit<br/>explanations]
+    end
+
+    Offline -->|job index| Retrieve
+    Retrieve -->|100 candidates| Rank
 ```
 
 The design is a classic two-stage retriever: fast, broad recall from the vector index, then a more expensive cross-encoder that reads the resume and each job together for precision.
