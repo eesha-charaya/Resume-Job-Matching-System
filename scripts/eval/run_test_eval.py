@@ -18,11 +18,9 @@ Pipeline:
 """
 
 import argparse
-import json
 import logging
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -133,18 +131,15 @@ def retrieve_for_resume(
     resume_embeddings: dict[int, np.ndarray],
     positive_embeddings: dict[str, np.ndarray],
     collection: chromadb.Collection,
+    previous_positive_ids: list[str],
 ) -> Optional[tuple[list[JobResult], set[str]]]:
-    """
-    Swap positives and run dense retrieval for a single resume.
-
-    Returns:
-        (retrieved_jobs, positive_chroma_ids) or None if retrieval fails.
-    """
+    """Swap positives and run dense retrieval for a single resume."""
     resume_id = int(resume_row["id"])
     logger.info(
         f"Retrieving for resume {resume_id} ({resume_row['seniority']}/{resume_row['domain']})"
     )
 
+    current_positive_ids: list[str] = []
     try:
         resume_positives = resume_positives_df[
             resume_positives_df["resume_id"] == resume_id
@@ -154,7 +149,7 @@ def retrieve_for_resume(
             return None
 
         current_positive_ids = swap_positives(
-            collection, [], resume_positives, positive_embeddings
+            collection, previous_positive_ids, resume_positives, positive_embeddings
         )
 
         query_emb = resume_embeddings[resume_id]
@@ -163,6 +158,15 @@ def retrieve_for_resume(
         return (retrieved, set(current_positive_ids))
 
     except Exception as e:
+        if current_positive_ids:
+            try:
+                collection.delete(ids=current_positive_ids)
+            except Exception:
+                logger.warning(
+                    "Failed to clean current positives after retrieval error for resume %s",
+                    resume_id,
+                    exc_info=True,
+                )
         logger.error("Error retrieving for resume %s: %s", resume_id, e, exc_info=True)
         return None
 
@@ -231,10 +235,9 @@ def score_resume(
         statuses = classify_reranker_outcome(statuses, reranked, skip_rerank)
 
         final_ranked = [job["id"] for job in reranked]
-        relevant_ids = positive_chroma_ids
         metrics = compute_metrics_at_k(
             retrieved_ids=final_ranked,
-            relevant_ids=relevant_ids,
+            relevant_ids=positive_chroma_ids,
             k_values=[K_PRECISION, K_RECALL],
         )
 
@@ -361,8 +364,14 @@ def main() -> None:
                 force_rebuild=args.force_resample,
             )
 
+            # Cached eval collections may contain positives left by an earlier run.
+            all_split_positive_ids = [f"pos_{pos_id}" for pos_id in positives_df["id"].tolist()]
+            if all_split_positive_ids:
+                collection.delete(ids=all_split_positive_ids)
+
             logger.info("Phase 1: Starting retrieval for all resumes")
             retrieval_results: list[tuple[pd.Series, Optional[tuple[list[JobResult], set[str]]]]] = []
+            previous_positive_ids: list[str] = []
 
             for _, resume_row in resumes_df.iterrows():
                 result = retrieve_for_resume(
@@ -371,8 +380,11 @@ def main() -> None:
                     resume_embeddings,
                     positive_embeddings,
                     collection,
+                    previous_positive_ids,
                 )
                 retrieval_results.append((resume_row, result))
+                if result is not None:
+                    previous_positive_ids = list(result[1])
 
             all_reranked: dict[int, list[JobResult]] = {}
             if not skip_rerank and cohere_api_key:
@@ -397,6 +409,8 @@ def main() -> None:
 
             logger.info("Phase 3: Starting scoring and metric computation")
             all_results: list[ResumeEvalResult] = []
+            batch_retrieved_ids: list[list[str]] = []
+            batch_relevant_ids: list[set[str]] = []
 
             for resume_row, retrieval_result in retrieval_results:
                 if retrieval_result is None:
@@ -418,21 +432,15 @@ def main() -> None:
 
                 if result:
                     all_results.append(result)
+                    batch_retrieved_ids.append([job["id"] for job in reranked])
+                    batch_relevant_ids.append(positive_chroma_ids)
 
             logger.info("Successfully evaluated %d/%d resumes", len(all_results), len(resumes_df))
 
-            logger.info("Computing aggregate metrics")
-            batch_retrieved_clean = []
-            batch_relevant = []
-
-            for result in all_results:
-                ranked = [p["positive_id"] for p in result["positives"] if p["miss_type"] == "hit"]
-                batch_retrieved_clean.append([f"pos_{pid}" for pid in ranked])
-                batch_relevant.append({f"pos_{p['positive_id']}" for p in result["positives"]})
-
+            logger.info("Computing aggregate metrics from the actual ranked result lists")
             batch_metrics = batch_compute_metrics_at_k(
-                batch_retrieved_clean,
-                batch_relevant,
+                batch_retrieved_ids,
+                batch_relevant_ids,
                 k_values=[K_PRECISION, K_RECALL],
             )
 
