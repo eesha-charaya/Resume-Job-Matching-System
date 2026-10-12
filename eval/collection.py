@@ -28,29 +28,16 @@ def get_or_build_tune_collection(
     collection_name: str = eval_config.CHROMA_TUNE_EVAL_COLLECTION,
     force_rebuild: bool = False,
 ) -> chromadb.Collection:
-    """
-    Get or build the tune eval ChromaDB collection, using cache if jobs haven't changed.
-
-    The collection contains sampled jobs with ID prefix "job_{id}".
-
-    Args:
-        tune_jobs_df: DataFrame with job_id column
-        db_path: Path to jobs.db
-        chroma_dir: ChromaDB persistent directory
-        hash_path: Path to hash file for cache invalidation
-        collection_name: ChromaDB collection name
-        force_rebuild: Force rebuild even if cache exists
-
-    Returns:
-        ChromaDB collection object
-    """
+    """Get or build an eval Chroma collection with model-aware cache invalidation."""
     hash_p = Path(hash_path)
 
-    # Compute hash of job_id column
     sorted_ids = np.sort(tune_jobs_df["job_id"].values)  # type: ignore[arg-type]
-    current_hash = data_loading.compute_hash("|".join(map(str, sorted_ids)).encode("utf-8"))
+    fingerprint = (
+        f"{config.EMBEDDING_MODEL}|{config.EMBEDDING_DIM}|"
+        + "|".join(map(str, sorted_ids))
+    )
+    current_hash = data_loading.compute_hash(fingerprint.encode("utf-8"))
 
-    # Check if collection exists and hash matches
     if not force_rebuild and hash_p.exists():
         try:
             with open(hash_p) as f:
@@ -59,17 +46,16 @@ def get_or_build_tune_collection(
                 chroma_client = chromadb.PersistentClient(path=chroma_dir)
                 try:
                     collection = chroma_client.get_collection(name=collection_name)
-                    logger.info("Reusing existing tune eval collection")
+                    logger.info("Reusing existing eval collection")
                     return collection
                 except Exception:
                     pass
         except Exception:
             pass
 
-    logger.info("Building tune eval ChromaDB collection")
+    logger.info("Building eval ChromaDB collection")
     chroma_client = chromadb.PersistentClient(path=chroma_dir)
 
-    # Delete existing collection if present
     try:
         chroma_client.delete_collection(name=collection_name)
         logger.info("Deleted existing collection")
@@ -77,10 +63,10 @@ def get_or_build_tune_collection(
         pass
 
     collection = chroma_client.get_or_create_collection(
-        name=collection_name, metadata={"hnsw_construction": config.HNSW_EF}
+        name=collection_name,
+        metadata={"hnsw_construction": config.HNSW_EF_CONSTRUCTION},
     )
 
-    # Fetch job data (embeddings + metadata)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
@@ -92,9 +78,11 @@ def get_or_build_tune_collection(
     rows = data_loading.chunked_select(
         conn,
         """
-        SELECT id, title, location, source_url, board_token, cleaned_description,
-               embedding
-        FROM jobs WHERE id IN ({})
+        SELECT id, title, location, source_url,
+               source_board AS board_token,
+               cleaned_description, embedding
+        FROM jobs
+        WHERE id IN ({}) AND embedded = 1 AND embedding IS NOT NULL
         """,
         job_ids,
     )
@@ -104,23 +92,29 @@ def get_or_build_tune_collection(
         embeddings_to_upsert.append(
             embedding.deserialize_embedding(row[6], dim=config.EMBEDDING_DIM).tolist()
         )
+        description = row[5] or ""
         metadatas_to_upsert.append(
             {
                 "title": row[1] or "",
                 "location": row[2] or "",
                 "source_url": row[3] or "",
                 "board_token": row[4] or "",
-                "cleaned_description": row[5] or "",
-                "required_degree": regex_extraction.extract_degree_requirement(row[5] or ""),
+                "cleaned_description": description,
+                "required_degree": regex_extraction.extract_degree_requirement(description),
                 "seniority_level": (
-                    regex_extraction.extract_seniority_level(row[5] or "")
+                    regex_extraction.extract_seniority_level(description)
                     or regex_extraction.extract_seniority_from_title(row[1] or "")
                 ),
-                "min_years_experience": regex_extraction.extract_years_experience(row[5] or ""),
+                "min_years_experience": regex_extraction.extract_years_experience(description),
             }
         )
 
     conn.close()
+
+    if not ids_to_upsert:
+        raise ValueError(
+            "No embedded sampled jobs were found. Run scripts/pipeline/embed_jobs.py first."
+        )
 
     collection.upsert(
         ids=ids_to_upsert,
@@ -129,9 +123,8 @@ def get_or_build_tune_collection(
         metadatas=metadatas_to_upsert,
     )
 
-    logger.info("Upserted %d jobs to tune eval collection", len(ids_to_upsert))
+    logger.info("Upserted %d jobs to eval collection", len(ids_to_upsert))
 
-    # Write hash
     hash_p.parent.mkdir(parents=True, exist_ok=True)
     with open(hash_p, "w") as f:
         f.write(current_hash)
@@ -145,23 +138,10 @@ def swap_positives(
     current_positives: pd.DataFrame,
     positive_embeddings: dict[str, np.ndarray],
 ) -> list[str]:
-    """
-    Delete previous positives and upsert current positives to the collection.
-
-    Args:
-        collection: ChromaDB collection
-        prev_positive_ids: List of previous positive ChromaDB IDs to delete
-        current_positives: DataFrame of current positives
-        positive_embeddings: dict mapping positive ID to embedding
-
-    Returns:
-        List of current positive ChromaDB IDs (for use as prev_positive_ids next iteration)
-    """
-    # Delete previous
+    """Delete previous positives and upsert current positives to the collection."""
     if prev_positive_ids:
         collection.delete(ids=prev_positive_ids)
 
-    # Upsert current
     ids_to_upsert = []
     embeddings_to_upsert = []
     metadatas_to_upsert = []
@@ -174,27 +154,30 @@ def swap_positives(
 
         ids_to_upsert.append(f"pos_{pos_id}")
         embeddings_to_upsert.append(positive_embeddings[pos_id].tolist())
+        description = str(row["job_description"])
+        title = str(row["title"]) if row["title"] else ""  # type: ignore[arg-type]
         metadatas_to_upsert.append(
             {
-                "title": str(row["title"]) if row["title"] else "",  # type: ignore[arg-type]
+                "title": title,
                 "location": "",
                 "source_url": "",
                 "board_token": "",
-                "cleaned_description": str(row["job_description"]),
-                "required_degree": regex_extraction.extract_degree_requirement(str(row["job_description"])),
+                "cleaned_description": description,
+                "required_degree": regex_extraction.extract_degree_requirement(description),
                 "seniority_level": (
-                    regex_extraction.extract_seniority_level(str(row["job_description"]))
-                    or regex_extraction.extract_seniority_from_title(str(row["title"]) if row["title"] else "")  # type: ignore[arg-type]
+                    regex_extraction.extract_seniority_level(description)
+                    or regex_extraction.extract_seniority_from_title(title)
                 ),
-                "min_years_experience": regex_extraction.extract_years_experience(str(row["job_description"])),
+                "min_years_experience": regex_extraction.extract_years_experience(description),
             }
         )
 
-    collection.upsert(
-        ids=ids_to_upsert,
-        embeddings=embeddings_to_upsert,
-        documents=[m["cleaned_description"] for m in metadatas_to_upsert],
-        metadatas=metadatas_to_upsert,
-    )
+    if ids_to_upsert:
+        collection.upsert(
+            ids=ids_to_upsert,
+            embeddings=embeddings_to_upsert,
+            documents=[m["cleaned_description"] for m in metadatas_to_upsert],
+            metadatas=metadatas_to_upsert,
+        )
 
     return ids_to_upsert
