@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""
-Generate synthetic positive job descriptions for all resumes in synthetic_resume.csv.
+"""Generate synthetic positive job descriptions for evaluation resumes.
 
-Iterates over each resume, runs the positives pipeline (generate → validate → repair)
-with target_count=5, and writes all collected job skeletons to a CSV file with:
-  - A unique UUID per job
-  - Resume ID reference
-  - All JobSkeleton fields
-  - Denormalized resume metadata (seniority, domain)
-  - An embedding-ready plain-text job_description
-  - ISO 8601 generation timestamp
-
-Output: data/eval/synthetic_job_descriptions.csv
+The normal run processes every resume and targets five validated positives per
+resume.  ``--limit`` and ``--target-count`` make it possible to smoke-test the
+pipeline before paying the cost of a full Ollama run.
 """
 
 import argparse
@@ -23,96 +15,101 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Add the project root so package imports like `src.*` and `eval.*` work
-# when this file is executed directly with `python scripts/eval/...`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from src.config import YEARS_UNKNOWN
 from eval.positive_gen.positives_pipeline import run_pipeline
 from eval.positive_gen.positives_validate import ResumeInfo
-from src.llm_extraction import extract_years_with_llm
 
 logger = logging.getLogger(__name__)
 
 
 def extract_skills_from_resume(resume_text: str) -> list[str]:
-    """
-    Extract primary skills from resume text.
-
-    Searches for a "Skills:" or "SKILLS:" section, splits on commas,
-    strips whitespace, and returns up to 4 items.
-
-    Args:
-        resume_text: Full resume text.
-
-    Returns:
-        List of skill strings (may be empty).
-    """
-    match = re.search(
-        r"(?:skills|SKILLS|Skills)\s*:([^,\n]*(?:,[^,\n]*)*)",
-        resume_text,
-        re.IGNORECASE,
-    )
+    match = re.search(r"Skills\s*:\s*([^\n]+)", resume_text, re.IGNORECASE)
     if not match:
         return []
+    return [skill.strip() for skill in match.group(1).split(",") if skill.strip()][:4]
 
-    skills_str = match.group(1)
-    skills = [s.strip() for s in skills_str.split(",") if s.strip()]
-    return skills[:4]
+
+def extract_years_from_resume(resume_text: str, seniority: str) -> int:
+    """Read the explicit years value from our deterministic synthetic resumes."""
+    match = re.search(r"with\s+(\d+)\s+years?\b", resume_text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return {"Junior": 1, "Mid": 3, "Senior": 6, "Staff": 8}.get(seniority, 3)
 
 
 def build_resume_info(row: dict) -> ResumeInfo:
-    """Build a ResumeInfo dict from one synthetic-resume CSV row."""
     resume_text = row["resume"]
-    seniority_str = row["seniority"].strip()
-    seniority = seniority_str.title()
-
-    years = extract_years_with_llm(resume_text, model="llama3.2")
-    if years == YEARS_UNKNOWN:
-        fallback_map = {
-            "Junior": 1,
-            "Mid": 3,
-            "Senior": 6,
-            "Staff": 8,
-        }
-        years = fallback_map.get(seniority, 3)
-
-    primary_skills = extract_skills_from_resume(resume_text)
-    domain = row["domain"].strip()
-
+    seniority = row["seniority"].strip().title()
     return {
         "seniority": seniority,
-        "years_experience": years,
-        "primary_skills": primary_skills,
-        "domain": domain,
+        "years_experience": extract_years_from_resume(resume_text, seniority),
+        "primary_skills": extract_skills_from_resume(resume_text),
+        "domain": row["domain"].strip(),
         "resume_text": resume_text,
     }
 
 
 def format_job_for_embedding(job: dict) -> str:
-    """Format a JobSkeleton dict as embedding-ready plain text."""
-    primary_skills_str = ", ".join(job.get("primary_skills", []))
-    secondary_skills_str = ", ".join(job.get("secondary_skills", []))
-    responsibilities_str = "; ".join(job.get("responsibilities", []))
-
     return (
         f"{job['title']}. {job['seniority']} level. Domain: {job['domain']}. "
         f"Requires {job['years_required']} years of experience. "
-        f"Skills: {primary_skills_str}. "
-        f"Additional skills: {secondary_skills_str}. "
-        f"Responsibilities: {responsibilities_str}."
+        f"Skills: {', '.join(job.get('primary_skills', []))}. "
+        f"Additional skills: {', '.join(job.get('secondary_skills', []))}. "
+        f"Responsibilities: {'; '.join(job.get('responsibilities', []))}."
     )
 
 
-def main():
+def write_rows(output_csv: Path, rows: list[dict]) -> None:
+    """Persist current progress so an interrupted run does not lose everything."""
+    if not rows:
+        return
+    fieldnames = [
+        "id",
+        "resume_id",
+        "title",
+        "seniority",
+        "years_required",
+        "domain",
+        "primary_skills",
+        "secondary_skills",
+        "responsibilities",
+        "resume_seniority",
+        "resume_domain",
+        "generated_at",
+        "job_description",
+    ]
+    with output_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Generate synthetic positive jobs")
     parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level (default: INFO)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Process only the first N resumes (useful for smoke tests)",
+    )
+    parser.add_argument(
+        "--target-count",
+        type=int,
+        default=5,
+        help="Validated positives to target per resume (default: 5)",
     )
     args = parser.parse_args()
+
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be at least 1")
+    if args.target_count < 1:
+        parser.error("--target-count must be at least 1")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -129,110 +126,81 @@ def main():
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Reading resumes from: %s", input_csv)
-    logger.info("Writing output to: %s", output_csv)
+    with input_csv.open("r", encoding="utf-8") as handle:
+        resumes = list(csv.DictReader(handle))
+    if args.limit is not None:
+        resumes = resumes[: args.limit]
 
-    all_rows = []
-    total_collected = 0
-    total_discarded = 0
+    logger.info(
+        "Loaded %d resume(s). Targeting %d positive job(s) per resume.",
+        len(resumes),
+        args.target_count,
+    )
 
-    with open(input_csv, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        resumes = list(reader)
+    all_rows: list[dict] = []
 
-    logger.info("Loaded %d resumes. Starting pipeline...", len(resumes))
+    try:
+        for idx, row in enumerate(resumes, 1):
+            resume_id = row["id"]
+            resume_text = row["resume"]
+            resume_seniority = row["seniority"].strip()
+            resume_domain = row["domain"].strip()
 
-    for idx, row in enumerate(resumes, 1):
-        resume_id = row["id"]
-        resume_text = row["resume"]
-        resume_seniority = row["seniority"].strip()
-        resume_domain = row["domain"].strip()
-
-        logger.info(
-            "[%d/%d] Processing resume_id=%s, seniority=%s, domain=%s",
-            idx,
-            len(resumes),
-            resume_id,
-            resume_seniority,
-            resume_domain,
-        )
-
-        resume_info = build_resume_info(row)
-
-        try:
-            jobs = run_pipeline(
-                resume_text=resume_text,
-                resume_info=resume_info,
-                target_count=5,
-                output_path=None,
-            )
-        except Exception as e:
-            logger.error(
-                "[%d/%d] Pipeline failed for resume_id=%s: %s",
+            logger.info(
+                "[%d/%d] Processing resume_id=%s, seniority=%s, domain=%s",
                 idx,
                 len(resumes),
                 resume_id,
-                e,
+                resume_seniority,
+                resume_domain,
             )
-            continue
 
-        for job in jobs:
-            output_row = {
-                "id": str(uuid.uuid4()),
-                "resume_id": resume_id,
-                "title": job.get("title", ""),
-                "seniority": job.get("seniority", ""),
-                "years_required": job.get("years_required", ""),
-                "domain": job.get("domain", ""),
-                "primary_skills": "; ".join(job.get("primary_skills", [])),
-                "secondary_skills": "; ".join(job.get("secondary_skills", [])),
-                "responsibilities": "; ".join(job.get("responsibilities", [])),
-                "resume_seniority": resume_seniority,
-                "resume_domain": resume_domain,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "job_description": format_job_for_embedding(job),
-            }
-            all_rows.append(output_row)
-            total_collected += 1
+            jobs = run_pipeline(
+                resume_text=resume_text,
+                resume_info=build_resume_info(row),
+                target_count=args.target_count,
+                output_path=None,
+            )
 
-        logger.info(
-            "[%d/%d] Collected %d jobs. Total so far: %d",
-            idx,
-            len(resumes),
-            len(jobs),
-            total_collected,
+            for job in jobs:
+                all_rows.append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "resume_id": resume_id,
+                        "title": job.get("title", ""),
+                        "seniority": job.get("seniority", ""),
+                        "years_required": job.get("years_required", ""),
+                        "domain": job.get("domain", ""),
+                        "primary_skills": "; ".join(job.get("primary_skills", [])),
+                        "secondary_skills": "; ".join(job.get("secondary_skills", [])),
+                        "responsibilities": "; ".join(job.get("responsibilities", [])),
+                        "resume_seniority": resume_seniority,
+                        "resume_domain": resume_domain,
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "job_description": format_job_for_embedding(job),
+                    }
+                )
+
+            # Checkpoint after every resume.
+            write_rows(output_csv, all_rows)
+            logger.info(
+                "[%d/%d] Collected %d job(s) for this resume. Total=%d",
+                idx,
+                len(resumes),
+                len(jobs),
+                len(all_rows),
+            )
+    except KeyboardInterrupt:
+        write_rows(output_csv, all_rows)
+        logger.warning(
+            "Interrupted. Preserved %d completed positive job(s) in %s",
+            len(all_rows),
+            output_csv,
         )
+        raise
 
-    logger.info("Writing %d jobs to %s...", total_collected, output_csv)
-    if all_rows:
-        fieldnames = [
-            "id",
-            "resume_id",
-            "title",
-            "seniority",
-            "years_required",
-            "domain",
-            "primary_skills",
-            "secondary_skills",
-            "responsibilities",
-            "resume_seniority",
-            "resume_domain",
-            "generated_at",
-            "job_description",
-        ]
-        with open(output_csv, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_rows)
-        logger.info("Wrote %d rows to %s", len(all_rows), output_csv)
-    else:
-        logger.warning("No jobs collected. CSV will be empty.")
-
-    logger.info(
-        "Pipeline complete. Total collected: %d, total discarded: %d",
-        total_collected,
-        total_discarded,
-    )
+    write_rows(output_csv, all_rows)
+    logger.info("Generation complete. Wrote %d rows to %s", len(all_rows), output_csv)
 
 
 if __name__ == "__main__":
