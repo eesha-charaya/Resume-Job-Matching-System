@@ -5,28 +5,26 @@ import sqlite3
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-# Add src and scripts/pipeline to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts" / "pipeline"))
 
 from embed_jobs import run_embedding
 from src.config import EMBEDDING_DIM
-from src.embedding import serialize_embedding
 
 
 @pytest.fixture
 def tmp_db():
-    """Create a temporary database with jobs schema."""
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
 
     conn = sqlite3.connect(db_path)
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             external_id TEXT NOT NULL,
@@ -47,28 +45,20 @@ def tmp_db():
             embedded INTEGER DEFAULT 0,
             UNIQUE(external_id, board_token)
         )
-    """)
+        """
+    )
     conn.commit()
     conn.close()
 
     yield db_path
 
-    # Cleanup
     if os.path.exists(db_path):
         os.unlink(db_path)
 
 
-@pytest.fixture
-def mock_voyage_client():
-    """Create a mock Voyage AI client."""
-    return MagicMock()
-
-
 def _insert_job(db_path, external_id, cleaned_description, embedded=0, embedding=None):
-    """Helper to insert a test job into the database."""
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
+    conn.execute(
         """INSERT INTO jobs
         (external_id, board_token, title, cleaned_description, preprocessed, embedded, embedding)
         VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -79,160 +69,90 @@ def _insert_job(db_path, external_id, cleaned_description, embedded=0, embedding
 
 
 class TestRunEmbedding:
-    """Tests for run_embedding function."""
-
     @patch("embed_jobs.create_client")
     @patch("embed_jobs.embed_batch")
-    def test_run_embedding_adds_columns(self, mock_embed_batch, mock_create_client, tmp_db, caplog):
-        """run_embedding adds embedding and embedded columns to jobs table."""
-        # Insert unembedded jobs
+    def test_run_embedding_adds_columns(self, mock_embed_batch, mock_create_client, tmp_db):
         _insert_job(tmp_db, "job-1", "Software engineer position")
         _insert_job(tmp_db, "job-2", "Data analyst role")
 
-        # Mock embeddings
-        mock_client = MagicMock()
-        mock_create_client.return_value = mock_client
+        mock_create_client.return_value = MagicMock()
         mock_embed_batch.return_value = [
             np.ones(EMBEDDING_DIM, dtype=np.float32),
             np.ones(EMBEDDING_DIM, dtype=np.float32),
         ]
 
-        run_embedding(tmp_db, "mock-api-key")
+        run_embedding(tmp_db)
 
-        # Verify columns exist
         conn = sqlite3.connect(tmp_db)
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(jobs)")
-        columns = {row[1] for row in cursor.fetchall()}
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
         conn.close()
-
         assert "embedding" in columns
         assert "embedded" in columns
 
     @patch("embed_jobs.create_client")
     @patch("embed_jobs.embed_batch")
-    def test_run_embedding_skips_empty_descriptions(
-        self, mock_embed_batch, mock_create_client, tmp_db
-    ):
-        """Jobs with empty descriptions are not embedded (NULL or empty string)."""
-        # Insert one with description, one empty, one NULL
+    def test_run_embedding_skips_empty_descriptions(self, mock_embed_batch, mock_create_client, tmp_db):
         _insert_job(tmp_db, "job-1", "Valid job description")
-        _insert_job(tmp_db, "job-2", "")  # Empty string
-        _insert_job(tmp_db, "job-3", None)  # NULL
+        _insert_job(tmp_db, "job-2", "")
+        _insert_job(tmp_db, "job-3", None)
 
-        mock_client = MagicMock()
-        mock_create_client.return_value = mock_client
-        # Only job-1 should be embedded
+        mock_create_client.return_value = MagicMock()
         mock_embed_batch.return_value = [np.ones(EMBEDDING_DIM, dtype=np.float32)]
 
-        run_embedding(tmp_db, "mock-api-key")
+        run_embedding(tmp_db)
 
-        # Verify embed_batch was called with only 1 text (job-1)
-        mock_embed_batch.assert_called()
-        # Check that only 1 job is embedded
-        call_args = mock_embed_batch.call_args
-        texts = call_args[0][1]  # Second arg is the texts list
-        assert len(texts) == 1
+        texts = mock_embed_batch.call_args[0][1]
+        assert texts == ["Valid job description"]
 
-    @patch("embed_jobs.VOYAGE_BATCH_SIZE", 2)
+    @patch("embed_jobs.EMBEDDING_BATCH_SIZE", 2)
     @patch("embed_jobs.create_client")
     @patch("embed_jobs.embed_batch")
-    def test_run_embedding_bad_batch_skipped(
-        self, mock_embed_batch, mock_create_client, tmp_db, caplog
-    ):
-        """When a batch fails, exception is caught and subsequent batches continue."""
-        # Insert 3 jobs; with VOYAGE_BATCH_SIZE=2 (mocked), they split into:
-        # - Batch 1: jobs 1–2 (raises)
-        # - Batch 2: job 3 (succeeds with 1 embedding)
+    def test_run_embedding_bad_batch_skipped(self, mock_embed_batch, mock_create_client, tmp_db, caplog):
         _insert_job(tmp_db, "job-1", "First job")
         _insert_job(tmp_db, "job-2", "Second job")
         _insert_job(tmp_db, "job-3", "Third job")
 
-        mock_client = MagicMock()
-        mock_create_client.return_value = mock_client
-        # First call raises, second call succeeds
+        mock_create_client.return_value = MagicMock()
         mock_embed_batch.side_effect = [
-            RuntimeError("API error"),
-            [np.ones(EMBEDDING_DIM, dtype=np.float32)],  # 1 embedding for batch 2
+            RuntimeError("embedding error"),
+            [np.ones(EMBEDDING_DIM, dtype=np.float32)],
         ]
 
-        run_embedding(tmp_db, "mock-api-key")
+        run_embedding(tmp_db)
 
-        # Verify error was logged
-        assert "embed_batch raised" in caplog.text or "error" in caplog.text.lower()
-
-        # Verify batch 2 succeeded (exactly 1 job embedded from batch 2)
+        assert "embed_batch failed" in caplog.text
         conn = sqlite3.connect(tmp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM jobs WHERE embedded=1")
-        embedded_count = cursor.fetchone()[0]
+        embedded_count = conn.execute("SELECT COUNT(*) FROM jobs WHERE embedded=1").fetchone()[0]
         conn.close()
-
         assert embedded_count == 1
 
     @patch("embed_jobs.create_client")
     @patch("embed_jobs.embed_batch")
     def test_run_embedding_idempotent(self, mock_embed_batch, mock_create_client, tmp_db):
-        """Calling run_embedding twice doesn't duplicate rows or embeddings."""
         _insert_job(tmp_db, "job-1", "Test job")
+        mock_create_client.return_value = MagicMock()
+        mock_embed_batch.return_value = [np.ones(EMBEDDING_DIM, dtype=np.float32)]
 
-        mock_client = MagicMock()
-        mock_create_client.return_value = mock_client
-        test_embedding = np.ones(EMBEDDING_DIM, dtype=np.float32)
-        mock_embed_batch.return_value = [test_embedding]
-
-        # First run
-        run_embedding(tmp_db, "mock-api-key")
-
-        conn = sqlite3.connect(tmp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM jobs")
-        count_after_first = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM jobs WHERE embedded=1")
-        embedded_after_first = cursor.fetchone()[0]
-        conn.close()
-
-        # Reset mock for second call
+        run_embedding(tmp_db)
         mock_embed_batch.reset_mock()
-        mock_embed_batch.return_value = []
-
-        # Second run (no unembedded jobs, so mock won't be called)
-        run_embedding(tmp_db, "mock-api-key")
+        run_embedding(tmp_db)
 
         conn = sqlite3.connect(tmp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM jobs")
-        count_after_second = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM jobs WHERE embedded=1")
-        embedded_after_second = cursor.fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        embedded = conn.execute("SELECT COUNT(*) FROM jobs WHERE embedded=1").fetchone()[0]
         conn.close()
-
-        # Row count unchanged, embedding count unchanged
-        assert count_after_first == count_after_second
-        assert embedded_after_first == embedded_after_second
-        assert embedded_after_first == 1
+        assert count == 1
+        assert embedded == 1
+        mock_embed_batch.assert_not_called()
 
 
 class TestMainFunction:
-    """Tests for main() entry point."""
-
     @patch("embed_jobs.load_dotenv")
     @patch("embed_jobs.run_embedding")
     @patch("sys.argv", ["embed_jobs.py", "--db-path", "/tmp/test.db"])
-    def test_main_voyage_key_missing(self, mock_run_embedding, mock_load_dotenv):
-        """main() exits with error if VOYAGE_API_KEY is missing."""
-        with patch("os.getenv") as mock_getenv:
-            mock_getenv.side_effect = lambda key, default=None: {
-                "DB_PATH": "/tmp/test.db",
-                "VOYAGE_API_KEY": None,
-            }.get(key, default)
+    def test_main_does_not_require_external_embedding_api_key(self, mock_run_embedding, mock_load_dotenv):
+        """Local Qwen embeddings should run without an embedding API key."""
+        from embed_jobs import main
 
-            with patch("sys.exit", side_effect=SystemExit) as mock_exit:
-                from embed_jobs import main
-
-                with pytest.raises(SystemExit):
-                    main()
-                # sys.exit(1) should be called
-                mock_exit.assert_called_with(1)
-                # run_embedding should NOT be called
-                mock_run_embedding.assert_not_called()
+        main()
+        mock_run_embedding.assert_called_once_with("/tmp/test.db")
