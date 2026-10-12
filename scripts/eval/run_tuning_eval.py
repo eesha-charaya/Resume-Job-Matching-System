@@ -26,7 +26,9 @@ from typing import Optional
 import numpy as np
 import chromadb
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
+# Add project root so `src` and `eval` packages are importable when this script
+# is executed directly from the repository root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -39,7 +41,7 @@ from src.config import (
     RETRIEVE_TOP_K,
     RERANK_TOP_N,
     RERANK_INTER_REQUEST_DELAY,
-    VOYAGE_MODEL,
+    EMBEDDING_MODEL,
     EMBEDDING_DIM,
     COHERE_RERANK_MODEL,
 )
@@ -103,19 +105,15 @@ def setup_logging(log_level: str = "INFO") -> None:
     )
 
 
-def load_env() -> tuple[str, Optional[str]]:
-    """Load .env and return API keys. Abort if VOYAGE_API_KEY missing."""
+def load_env() -> Optional[str]:
+    """Load .env and return the optional Cohere API key."""
     load_dotenv()
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
     cohere_key = os.environ.get("COHERE_API_KEY")
-
-    if not voyage_key:
-        raise ValueError("VOYAGE_API_KEY must be set in .env")
 
     if not cohere_key:
         logger.warning("COHERE_API_KEY not set; reranking will be skipped")
 
-    return voyage_key, cohere_key
+    return cohere_key
 
 
 def retrieve_for_resume(
@@ -125,19 +123,13 @@ def retrieve_for_resume(
     positive_embeddings: dict[str, np.ndarray],
     collection: chromadb.Collection,
 ) -> Optional[tuple[list[JobResult], set[str]]]:
-    """
-    Swap positives and run dense retrieval for a single resume.
-
-    Returns:
-        (retrieved_jobs, positive_chroma_ids) or None if retrieval fails.
-    """
+    """Swap positives and run dense retrieval for a single resume."""
     resume_id = int(resume_row["id"])
     logger.info(
         f"Retrieving for resume {resume_id} ({resume_row['seniority']}/{resume_row['domain']})"
     )
 
     try:
-        # Swap positives
         resume_positives = resume_positives_df[
             resume_positives_df["resume_id"] == resume_id
         ]
@@ -149,10 +141,7 @@ def retrieve_for_resume(
             collection, [], resume_positives, positive_embeddings
         )
 
-        # Get query embedding
         query_emb = resume_embeddings[resume_id]
-
-        # Dense retrieval
         retrieved = query_collection(collection, query_emb, top_k=RETRIEVE_TOP_K, ef=HNSW_EF)
 
         return (retrieved, set(current_positive_ids))
@@ -166,12 +155,6 @@ def classify_positive_retrieval(
     retrieved: list[JobResult],
     positive_chroma_ids: set[str],
 ) -> dict[str, dict]:
-    """
-    Classify which positives were retrieved and at what rank.
-
-    Returns:
-        {positive_chroma_id: {"embedding_rank": int | None, "embedding_hit": bool}}
-    """
     statuses = {pos_id: {"embedding_rank": None, "embedding_hit": False}
                 for pos_id in positive_chroma_ids}
 
@@ -188,30 +171,23 @@ def classify_reranker_outcome(
     reranked: list[JobResult],
     skip_rerank: bool,
 ) -> dict[str, dict]:
-    """
-    Augment statuses with reranker outcomes and miss_type classification.
-
-    Returns updated statuses dict.
-    """
     for status in statuses.values():
         status["rerank_rank"] = None
         status["reranker_hit"] = None
         status["miss_type"] = "embedding_miss"
 
     if skip_rerank:
-        # No reranking: embedding hits are hits
         for status in statuses.values():
             if status["embedding_hit"]:
                 status["miss_type"] = "hit"
         return statuses
 
-    # Classify reranker outcomes
     for rank, job in enumerate(reranked, start=1):
         if job["id"] in statuses:
             statuses[job["id"]]["rerank_rank"] = rank
             statuses[job["id"]]["reranker_hit"] = True
 
-    for pos_id, status in statuses.items():
+    for _, status in statuses.items():
         if status["embedding_hit"]:
             if status["reranker_hit"]:
                 status["miss_type"] = "hit"
@@ -232,46 +208,28 @@ def score_resume(
     reranked: list[JobResult],
     skip_rerank: bool,
 ) -> Optional[ResumeEvalResult]:
-    """
-    Score a resume's retrieval and compute metrics.
-
-    Classifies hits, computes precision@k and recall@k metrics.
-
-    Returns:
-        ResumeEvalResult or None if scoring fails.
-    """
     resume_id = int(resume_row["id"])
 
     try:
-        # Classify embedding hits
         statuses = classify_positive_retrieval(retrieved, positive_chroma_ids)
-
-        # Classify reranker outcome
         statuses = classify_reranker_outcome(statuses, reranked, skip_rerank)
 
-        # Build final ranked list (from reranked)
         final_ranked = [job["id"] for job in reranked]
-
-        # Compute metrics
-        relevant_ids = positive_chroma_ids
         metrics = compute_metrics_at_k(
             retrieved_ids=final_ranked,
-            relevant_ids=relevant_ids,
+            relevant_ids=positive_chroma_ids,
             k_values=[K_PRECISION, K_RECALL],
         )
 
-        # Get resume's positives for this evaluation
         resume_positives = resume_positives_df[
             resume_positives_df["resume_id"] == resume_id
         ]
 
-        # Build PositiveRetrievalStatus records
         positive_statuses = []
         for _, pos_row in resume_positives.iterrows():
             pos_chroma_id = f"pos_{pos_row['id']}"
             status = statuses[pos_chroma_id]
 
-            # Parse skills
             primary_skills = (
                 str(pos_row["primary_skills"]).split("; ")
                 if pd.notna(pos_row["primary_skills"])
@@ -313,10 +271,7 @@ def score_resume(
         return None
 
 
-
-
 def main() -> None:
-    """Main orchestration function."""
     args = parse_args()
     setup_logging(args.log_level)
 
@@ -324,69 +279,60 @@ def main() -> None:
     logger.info("Resume-Job Matching: Tune Set Evaluation")
     logger.info("=" * 80)
 
-    # Setup
-    voyage_api_key, cohere_api_key = load_env()
+    cohere_api_key = load_env()
     skip_rerank = args.skip_rerank or not cohere_api_key
     if not cohere_api_key and not args.skip_rerank:
         logger.warning("Cohere API key missing; reranking disabled")
 
-    # MLflow setup
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
     run_name = f"tune_ef{HNSW_EF}_topk{RETRIEVE_TOP_K}_rerank{RERANK_TOP_N}"
 
     with mlflow.start_run(run_name=run_name):
         mlflow.set_tags({
-            "eval_set":    "tune",
+            "eval_set": "tune",
             "skip_rerank": str(skip_rerank),
-            "db_path":     args.db_path,
+            "db_path": args.db_path,
         })
         mlflow.log_params({
-            "voyage_model":          VOYAGE_MODEL,
-            "embedding_dim":         EMBEDDING_DIM,
-            "retrieve_top_k":        RETRIEVE_TOP_K,
-            "hnsw_ef":               HNSW_EF,
-            "hnsw_ef_construction":  HNSW_EF_CONSTRUCTION,
-            "rerank_model":          COHERE_RERANK_MODEL,
-            "rerank_top_n":          RERANK_TOP_N,
-            "skip_rerank":           skip_rerank,
-            "k_precision":           K_PRECISION,
-            "k_recall":              K_RECALL,
-            "tune_sample_n":         TUNE_SAMPLE_N,
-            "sample_seed":           SAMPLE_SEED,
+            "embedding_model": EMBEDDING_MODEL,
+            "embedding_dim": EMBEDDING_DIM,
+            "retrieve_top_k": RETRIEVE_TOP_K,
+            "hnsw_ef": HNSW_EF,
+            "hnsw_ef_construction": HNSW_EF_CONSTRUCTION,
+            "rerank_model": COHERE_RERANK_MODEL,
+            "rerank_top_n": RERANK_TOP_N,
+            "skip_rerank": skip_rerank,
+            "k_precision": K_PRECISION,
+            "k_recall": K_RECALL,
+            "tune_sample_n": TUNE_SAMPLE_N,
+            "sample_seed": SAMPLE_SEED,
         })
 
-        # Create results directory
         Path(RESULTS_DIR).mkdir(parents=True, exist_ok=True)
-
-        voyage_client = create_client(voyage_api_key)
+        embedding_client = create_client()
 
         try:
-            # Load tune data
             logger.info("Loading tune data")
             resumes_df = pd.read_csv(TUNE_RESUMES_PATH)
             positives_df = pd.read_csv(TUNE_POSITIVES_PATH)
             logger.info("Loaded %d resumes and %d positives", len(resumes_df), len(positives_df))
 
-            # Sample jobs
             tune_jobs_df, _ = sample_jobs(
                 args.db_path, force=args.force_resample
             )
 
-            # Embed positives and resumes
             positive_embeddings = embed_positives(
-                voyage_client, positives_df
+                embedding_client, positives_df
             )
             resume_embeddings = embed_resumes(
-                voyage_client, resumes_df
+                embedding_client, resumes_df
             )
 
-            # Build collection
             collection = get_or_build_tune_collection(
                 tune_jobs_df, args.db_path, force_rebuild=args.force_resample
             )
 
-            # Phase 1: Retrieval loop
             logger.info("Phase 1: Starting retrieval for all resumes")
             retrieval_results: list[tuple[pd.Series, Optional[tuple[list[JobResult], set[str]]]]] = []
 
@@ -400,7 +346,6 @@ def main() -> None:
                 )
                 retrieval_results.append((resume_row, result))
 
-            # Phase 2: Batch reranking
             all_reranked: dict[int, list[JobResult]] = {}
             if not skip_rerank and cohere_api_key:
                 logger.info("Phase 2: Starting batch reranking")
@@ -422,7 +367,6 @@ def main() -> None:
             else:
                 logger.info("Phase 2: Skipping reranking")
 
-            # Phase 3: Scoring loop
             logger.info("Phase 3: Starting scoring and metric computation")
             all_results: list[ResumeEvalResult] = []
 
@@ -449,7 +393,6 @@ def main() -> None:
 
             logger.info("Successfully evaluated %d/%d resumes", len(all_results), len(resumes_df))
 
-            # Compute aggregate metrics
             logger.info("Computing aggregate metrics")
             batch_retrieved_clean = []
             batch_relevant = []
@@ -465,7 +408,6 @@ def main() -> None:
                 k_values=[K_PRECISION, K_RECALL],
             )
 
-            # Write results
             write_results_json(all_results, batch_metrics, skip_rerank)
             write_missed_positives_csv(all_results, positives_df)
 
