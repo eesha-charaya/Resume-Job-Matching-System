@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Generate the 50-resume synthetic corpus expected by the eval pipeline.
+"""Generate a deterministic 50-resume corpus for retrieval evaluation.
 
-The downstream evaluation code expects ``data/eval/synthetic_resume.csv`` with
-columns: ``id,resume,seniority,domain``.  This script creates that input
-reproducibly so the existing positive/negative generation and 30/20
-stratified split can run from a clean checkout.
+The downstream eval pipeline expects ``data/eval/synthetic_resume.csv`` with
+columns ``id,resume,seniority,domain``.  The generated resumes intentionally
+vary by domain, seniority, skills, projects, years, and role wording while
+remaining reproducible.
 """
 
 from __future__ import annotations
@@ -18,69 +18,117 @@ logger = logging.getLogger(__name__)
 
 TOTAL_RESUMES = 50
 
-# These totals mirror the distribution used by the existing split tests.
-SENIORITY_COUNTS = {
-    "junior": 15,
-    "mid": 20,
-    "senior": 15,
-}
-DOMAIN_COUNTS = {
-    "backend": 20,
-    "frontend": 15,
-    "devops": 15,
+SENIORITIES = ["junior", "mid", "senior"]
+DOMAINS = ["backend", "frontend", "fullstack", "data"]
+
+YEARS = {
+    "junior": [1, 2],
+    "mid": [3, 4, 5],
+    "senior": [6, 7, 8],
 }
 
-YEARS_BY_SENIORITY = {
-    "junior": 1,
-    "mid": 4,
-    "senior": 7,
+DOMAIN_PROFILES = {
+    "backend": {
+        "titles": ["Backend Software Engineer", "API Engineer", "Platform Backend Engineer"],
+        "skills": [
+            ["Python", "FastAPI", "PostgreSQL", "Docker"],
+            ["Java", "Spring Boot", "PostgreSQL", "Kafka"],
+            ["Go", "gRPC", "Redis", "Kubernetes"],
+            ["Python", "Django", "MySQL", "AWS"],
+        ],
+        "projects": [
+            "designed REST APIs for a customer-facing service and improved request reliability",
+            "built an event-driven service that processed asynchronous application workflows",
+            "implemented caching and database indexing to reduce API latency under production load",
+            "developed authentication and authorization services used by multiple internal applications",
+        ],
+    },
+    "frontend": {
+        "titles": ["Frontend Software Engineer", "UI Engineer", "Web Application Engineer"],
+        "skills": [
+            ["TypeScript", "React", "JavaScript", "CSS"],
+            ["React", "Redux", "TypeScript", "Jest"],
+            ["JavaScript", "Next.js", "HTML", "CSS"],
+            ["TypeScript", "React", "GraphQL", "Playwright"],
+        ],
+        "projects": [
+            "built responsive product workflows and reusable UI components for a web application",
+            "migrated a client application to typed state management and improved maintainability",
+            "implemented accessible dashboards with client-side caching and API integrations",
+            "developed end-to-end tested user flows and improved page performance for core screens",
+        ],
+    },
+    "fullstack": {
+        "titles": ["Full Stack Software Engineer", "Product Engineer", "Full Stack Web Engineer"],
+        "skills": [
+            ["Python", "React", "PostgreSQL", "Docker"],
+            ["Java", "Spring Boot", "React", "SQL"],
+            ["TypeScript", "Node.js", "React", "MongoDB"],
+            ["Python", "FastAPI", "TypeScript", "AWS"],
+        ],
+        "projects": [
+            "delivered an end-to-end product feature spanning APIs, persistence, and interactive UI components",
+            "built internal workflow tooling with backend services and a browser-based management interface",
+            "implemented a user-facing application with authentication, APIs, database models, and deployment automation",
+            "developed full-stack analytics features connecting data services to interactive product experiences",
+        ],
+    },
+    "data": {
+        "titles": ["Data Engineer", "Analytics Engineer", "Machine Learning Data Engineer"],
+        "skills": [
+            ["Python", "SQL", "Airflow", "Spark"],
+            ["Python", "Pandas", "PostgreSQL", "dbt"],
+            ["SQL", "Spark", "AWS", "Kafka"],
+            ["Python", "PyTorch", "SQL", "MLflow"],
+        ],
+        "projects": [
+            "built batch data pipelines that transformed raw event data into reliable analytical datasets",
+            "developed data quality checks and scheduled transformations for reporting and experimentation",
+            "implemented streaming ingestion and scalable processing for high-volume application events",
+            "prepared feature pipelines and reproducible datasets for machine learning model development",
+        ],
+    },
 }
 
-SKILLS_BY_DOMAIN = {
-    "backend": ["Python", "FastAPI", "PostgreSQL", "Docker"],
-    "frontend": ["TypeScript", "React", "JavaScript", "CSS"],
-    "devops": ["AWS", "Kubernetes", "Terraform", "Docker"],
-}
-
-ROLE_BY_DOMAIN = {
-    "backend": "Backend Software Engineer",
-    "frontend": "Frontend Software Engineer",
-    "devops": "DevOps Engineer",
-}
-
-
-def _expand_counts(counts: dict[str, int]) -> list[str]:
-    values: list[str] = []
-    for label, count in counts.items():
-        values.extend([label] * count)
-    return values
+IMPACT_PHRASES = [
+    "improved reliability for production users",
+    "reduced manual operational work for the team",
+    "improved maintainability through testing and code review",
+    "collaborated with product and engineering partners to ship the work",
+    "added monitoring and documentation to support production ownership",
+]
 
 
 def build_rows() -> list[dict[str, str | int]]:
-    """Build the deterministic 50-row synthetic resume corpus."""
-    seniorities = _expand_counts(SENIORITY_COUNTS)
-    domains = _expand_counts(DOMAIN_COUNTS)
-
-    if len(seniorities) != TOTAL_RESUMES or len(domains) != TOTAL_RESUMES:
-        raise ValueError("Synthetic resume distributions must total 50 rows")
-
+    """Build 50 deterministic but meaningfully varied synthetic resumes."""
     rows: list[dict[str, str | int]] = []
-    for idx, (seniority, domain) in enumerate(zip(seniorities, domains), start=1):
-        years = YEARS_BY_SENIORITY[seniority]
-        year_word = "year" if years == 1 else "years"
-        skills = SKILLS_BY_DOMAIN[domain]
-        role = ROLE_BY_DOMAIN[domain]
-        skills_csv = ", ".join(skills)
+
+    for idx in range(1, TOTAL_RESUMES + 1):
+        # Rotate independently so each seniority appears across every domain.
+        seniority = SENIORITIES[(idx - 1) % len(SENIORITIES)]
+        domain = DOMAINS[((idx - 1) * 3) % len(DOMAINS)]
+        profile = DOMAIN_PROFILES[domain]
+
+        years_options = YEARS[seniority]
+        years = years_options[((idx - 1) // len(SENIORITIES)) % len(years_options)]
+        title = profile["titles"][(idx - 1) % len(profile["titles"])]
+        skills = profile["skills"][(idx - 1) % len(profile["skills"])]
+        project = profile["projects"][((idx - 1) // 2) % len(profile["projects"])]
+        impact = IMPACT_PHRASES[(idx - 1) % len(IMPACT_PHRASES)]
+
+        leadership = ""
+        if seniority == "mid":
+            leadership = " Owned features independently and participated in design reviews."
+        elif seniority == "senior":
+            leadership = " Led technical design, mentored teammates, and coordinated cross-team delivery."
 
         resume = (
-            f"{role}\n"
-            f"Professional Summary: {seniority.title()} {role.lower()} with {years} {year_word} "
-            f"of experience building and operating production software.\n"
-            f"Skills: {skills_csv}\n"
-            f"Experience: Delivered project {idx:02d} using {skills[0]} and {skills[1]}, "
-            f"collaborated with cross-functional teams, reviewed code, and improved system "
-            f"reliability and maintainability.\n"
-            f"Education: Bachelor's degree in Computer Science."
+            f"{title}\n"
+            f"Professional Summary: {seniority.title()} {domain} engineer with {years} "
+            f"{'year' if years == 1 else 'years'} of professional software experience.\n"
+            f"Skills: {', '.join(skills)}\n"
+            f"Experience: {project.capitalize()}; {impact}.{leadership}\n"
+            f"Education: Bachelor's degree in Computer Science or a related technical field."
         )
 
         rows.append(
@@ -96,13 +144,9 @@ def build_rows() -> list[dict[str, str | int]]:
 
 
 def write_csv(rows: list[dict[str, str | int]], output_path: Path) -> None:
-    """Write synthetic resumes using the schema expected downstream."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["id", "resume", "seniority", "domain"],
-        )
+        writer = csv.DictWriter(handle, fieldnames=["id", "resume", "seniority", "domain"])
         writer.writeheader()
         writer.writerows(rows)
 
