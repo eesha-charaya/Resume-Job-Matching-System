@@ -4,10 +4,18 @@ A small installable Python package extracted from the larger Resume-Job Matching
 
 ## Install
 
+Create and activate a virtual environment, then upgrade the packaging tools first:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+```
+
 From the repository root:
 
 ```bash
-python -m pip install -e ./package
+python -m pip install -e "./package"
 ```
 
 Or directly from the `package` branch on GitHub:
@@ -44,8 +52,16 @@ metrics = compute_metrics_at_k(
 ## Development
 
 ```bash
+python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e "./package[test]"
+python -c "import resume_job_matcher; print(resume_job_matcher.__version__)"
 pytest package/tests
+```
+
+If editable install is not needed, a regular install also works:
+
+```bash
+python -m pip install "./package[test]"
 ```
 
 This package is maintained as part of the Resume-Job Matching System repository.
