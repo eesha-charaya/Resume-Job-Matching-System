@@ -98,7 +98,7 @@ def extract_years_experience(text: str) -> int:
     if not text:
         return YEARS_UNKNOWN
 
-    found = []
+    found: list[int] = []
     for pattern in _YEARS_PATTERNS:
         found.extend(int(match.group(1)) for match in pattern.finditer(text))
     return min(found) if found else YEARS_UNKNOWN
