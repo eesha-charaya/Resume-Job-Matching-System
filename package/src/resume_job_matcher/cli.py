@@ -2,18 +2,18 @@
 
 import argparse
 import json
-from typing import List, Optional
+from typing import Optional
 
 from .extraction import extract_job_requirements
 from .metrics import compute_metrics_at_k
 from .preprocessing import preprocess_description
 
 
-def _csv_list(value: str) -> List[str]:
+def _csv_list(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _csv_ints(value: str) -> List[int]:
+def _csv_ints(value: str) -> list[int]:
     return [int(item) for item in _csv_list(value)]
 
 
@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     """Run the command-line interface."""
     args = build_parser().parse_args(argv)
 
