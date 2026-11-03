@@ -9,7 +9,13 @@ def test_clean_command(capsys):
 
 
 def test_extract_command(capsys):
-    assert main(["extract", "Bachelor's degree and 2+ years of experience", "--title", "Senior Engineer"]) == 0
+    args = [
+        "extract",
+        "Bachelor's degree and 2+ years of experience",
+        "--title",
+        "Senior Engineer",
+    ]
+    assert main(args) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["required_degree"] == 1
     assert result["seniority_level"] == 3
@@ -17,12 +23,17 @@ def test_extract_command(capsys):
 
 
 def test_metrics_command(capsys):
-    assert main([
-        "metrics",
-        "--retrieved", "j1,j2,j3",
-        "--relevant", "j1,j3",
-        "--k", "1,3",
-    ]) == 0
+    assert main(
+        [
+            "metrics",
+            "--retrieved",
+            "j1,j2,j3",
+            "--relevant",
+            "j1,j3",
+            "--k",
+            "1,3",
+        ]
+    ) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["precision"]["1"] == 1.0
     assert result["recall"]["3"] == 1.0
