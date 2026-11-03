@@ -158,3 +158,35 @@ tests/                  pytest suite
 ```bash
 pytest
 ```
+
+
+## Installable Python Package
+
+This repository also contains a reusable Python package under `package/`. It packages job-description preprocessing and retrieval-evaluation utilities from the larger Resume-Job Matching System using a conventional `src/` layout and `pyproject.toml`.
+
+Install it from the repository root:
+
+```bash
+python -m pip install -e "./package"
+```
+
+Or install it directly from the `package` branch on GitHub:
+
+```bash
+python -m pip install "git+https://github.com/eesha-charaya/Resume-Job-Matching-System.git@package#subdirectory=package"
+```
+
+Example:
+
+```python
+from resume_job_matcher import preprocess_description, compute_metrics_at_k
+
+cleaned = preprocess_description("<p>Python &amp; data science</p>")
+metrics = compute_metrics_at_k(
+    retrieved_ids=["job-1", "job-2", "job-3"],
+    relevant_ids={"job-1", "job-3"},
+    k_values=[1, 3],
+)
+```
+
+Package-specific documentation and tests are in `package/README.md` and `package/tests/`.
