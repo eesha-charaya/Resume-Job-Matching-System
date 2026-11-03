@@ -1,6 +1,6 @@
 """Metadata-filter helpers for resume-job retrieval."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from .constants import (
     DEGREE_UNKNOWN,
@@ -8,7 +8,7 @@ from .constants import (
     YEARS_UNKNOWN,
 )
 
-MetadataFilter = Dict[str, Any]
+MetadataFilter = dict[str, Any]
 
 
 def build_metadata_filter(
@@ -17,7 +17,7 @@ def build_metadata_filter(
     user_years: int,
 ) -> Optional[MetadataFilter]:
     """Build a Chroma-compatible metadata filter from candidate attributes."""
-    conditions: List[MetadataFilter] = []
+    conditions: list[MetadataFilter] = []
 
     if user_seniority != SENIORITY_UNKNOWN:
         conditions.append(
