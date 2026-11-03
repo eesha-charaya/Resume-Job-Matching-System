@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resume-job-matcher"
+version = "0.1.0"
+description = "Reusable preprocessing and evaluation utilities from the Resume-Job Matching System"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Eesha Charaya" }
+]
+dependencies = [
+  "beautifulsoup4>=4.12"
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
