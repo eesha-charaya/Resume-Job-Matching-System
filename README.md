@@ -158,3 +158,35 @@ tests/                  pytest suite
 ```bash
 pytest
 ```
+
+## Installable Python Package
+
+The `package` branch contains an installable, tested Python package under `package/` that exposes reusable components from the Resume-Job Matching System.
+
+It includes:
+
+- job-description preprocessing
+- degree, seniority, and experience requirement extraction
+- metadata-filter construction for retrieval
+- Precision@k and Recall@k evaluation utilities
+- a command-line interface
+- typed APIs, automated tests, coverage, linting, type checking, and distribution build validation
+
+Install directly from GitHub:
+
+```bash
+python -m pip install "git+https://github.com/eesha-charaya/Resume-Job-Matching-System.git@package#subdirectory=package"
+```
+
+Example:
+
+```python
+from resume_job_matcher import extract_job_requirements
+
+requirements = extract_job_requirements(
+    "Bachelor's degree and 3+ years of experience required",
+    title="Senior Data Scientist",
+)
+```
+
+See `package/README.md` for the full API, CLI, development workflow, and package structure.
