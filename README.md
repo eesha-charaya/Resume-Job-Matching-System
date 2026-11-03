@@ -159,18 +159,20 @@ tests/                  pytest suite
 pytest
 ```
 
-
 ## Installable Python Package
 
-This repository also contains a reusable Python package under `package/`. It packages job-description preprocessing and retrieval-evaluation utilities from the larger Resume-Job Matching System using a conventional `src/` layout and `pyproject.toml`.
+The `package` branch contains an installable, tested Python package under `package/` that exposes reusable components from the Resume-Job Matching System.
 
-Install it from the repository root:
+It includes:
 
-```bash
-python -m pip install -e "./package"
-```
+- job-description preprocessing
+- degree, seniority, and experience requirement extraction
+- metadata-filter construction for retrieval
+- Precision@k and Recall@k evaluation utilities
+- a command-line interface
+- typed APIs, automated tests, coverage, linting, type checking, and distribution build validation
 
-Or install it directly from the `package` branch on GitHub:
+Install directly from GitHub:
 
 ```bash
 python -m pip install "git+https://github.com/eesha-charaya/Resume-Job-Matching-System.git@package#subdirectory=package"
@@ -179,14 +181,12 @@ python -m pip install "git+https://github.com/eesha-charaya/Resume-Job-Matching-
 Example:
 
 ```python
-from resume_job_matcher import preprocess_description, compute_metrics_at_k
+from resume_job_matcher import extract_job_requirements
 
-cleaned = preprocess_description("<p>Python &amp; data science</p>")
-metrics = compute_metrics_at_k(
-    retrieved_ids=["job-1", "job-2", "job-3"],
-    relevant_ids={"job-1", "job-3"},
-    k_values=[1, 3],
+requirements = extract_job_requirements(
+    "Bachelor's degree and 3+ years of experience required",
+    title="Senior Data Scientist",
 )
 ```
 
-Package-specific documentation and tests are in `package/README.md` and `package/tests/`.
+See `package/README.md` for the full API, CLI, development workflow, and package structure.
