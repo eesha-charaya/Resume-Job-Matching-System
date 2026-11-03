@@ -1,4 +1,5 @@
 import pytest
+
 from resume_job_matcher import compute_metrics_at_k, precision_at_k, recall_at_k
 
 RETRIEVED = ["j1", "j2", "j3", "j4", "j5"]
