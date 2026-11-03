@@ -2,6 +2,7 @@
 
 import html
 import re
+from typing import Optional
 
 from bs4 import BeautifulSoup
 
@@ -28,7 +29,7 @@ def _unescape(raw: str) -> str:
     return raw
 
 
-def preprocess_description(raw: str | None) -> str:
+def preprocess_description(raw: Optional[str]) -> str:
     """Convert a raw HTML job description into normalized plain text."""
     if not raw:
         return ""
